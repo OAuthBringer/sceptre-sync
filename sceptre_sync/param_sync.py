@@ -14,7 +14,7 @@ import fnmatch
 import os
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple, Union
+from typing import Dict, List, Optional, Set, Tuple
 
 import ruamel.yaml
 from ruamel.yaml.comments import CommentedMap
@@ -186,6 +186,79 @@ class ParamSync:
         except Exception as e:
             print(f"Error saving YAML file {file_path}: {e}", file=sys.stderr)
             sys.exit(1)
+    
+    def _compare_templates(self, source_template: Dict, target_template: Dict) -> Optional[Dict]:
+        """
+        Compare source and target templates to determine if they differ.
+        
+        This method extracts the template comparison logic to reduce nesting
+        in the generate_diff method.
+        
+        Args:
+            source_template: Template from source YAML
+            target_template: Template from target YAML
+            
+        Returns:
+            Dict with 'old' and 'new' keys if templates differ, None if identical
+        """
+        # Compare template path
+        if 'path' in source_template and 'path' in target_template:
+            if source_template['path'] != target_template['path']:
+                return {
+                    'old': target_template,
+                    'new': source_template
+                }
+        # Compare template type
+        elif 'type' in source_template and 'type' in target_template:
+            if source_template['type'] != target_template['type']:
+                return {
+                    'old': target_template,
+                    'new': source_template
+                }
+        # Compare entire template if structure differs
+        elif str(source_template) != str(target_template):
+            return {
+                'old': target_template,
+                'new': source_template
+            }
+        
+        return None
+    
+    def _diff_parameters(self, source_params: Dict, target_params: Dict, 
+                        params_to_sync: List[str]) -> Tuple[Dict, Dict, Dict]:
+        """
+        Compare source and target parameters to categorize changes.
+        
+        This method extracts the parameter diffing logic to reduce complexity
+        in the generate_diff method.
+        
+        Args:
+            source_params: Parameters from source YAML
+            target_params: Parameters from target YAML
+            params_to_sync: List of parameter names to compare
+            
+        Returns:
+            Tuple of (added, modified, unchanged) dictionaries
+        """
+        added = {}
+        modified = {}
+        unchanged = {}
+        
+        for param in params_to_sync:
+            if param in source_params:
+                source_value = source_params[param]
+                
+                if param not in target_params:
+                    added[param] = source_value
+                elif str(source_params[param]) != str(target_params[param]):
+                    modified[param] = {
+                        'old': target_params[param],
+                        'new': source_value
+                    }
+                else:
+                    unchanged[param] = source_value
+        
+        return added, modified, unchanged
 
     def generate_diff(self, source_data: Dict, target_data: Dict, params_to_sync: List[str], 
                      params_to_delete: List[str], sync_template: bool = False) -> Dict:
@@ -202,66 +275,36 @@ class ParamSync:
         Returns:
             Dict containing added, modified, unchanged, and deleted parameters
         """
-        diff = {
-            'added': {},
-            'modified': {},
-            'unchanged': {},
-            'deleted': {},
-            'template': None
-        }
-
-        # Check if parameters are nested
+        # Get parameters from source and target
         source_params = source_data.get('parameters', {})
         target_params = target_data.get('parameters', {})
         
-        # Check parameters to sync
-        for param in params_to_sync:
-            if param in source_params:
-                source_value = source_params[param]
-                
-                if param not in target_params:
-                    diff['added'][param] = source_value
-                elif str(source_params[param]) != str(target_params[param]):
-                    diff['modified'][param] = {
-                        'old': target_params[param],
-                        'new': source_value
-                    }
-                else:
-                    diff['unchanged'][param] = source_value
+        # Use helper method to diff parameters
+        added, modified, unchanged = self._diff_parameters(
+            source_params, target_params, params_to_sync
+        )
         
         # Check parameters to delete
+        deleted = {}
         for param in params_to_delete:
             if param in target_params:
-                diff['deleted'][param] = target_params[param]
+                deleted[param] = target_params[param]
         
         # Check template if requested
+        template_diff = None
         if sync_template and 'template' in source_data and 'template' in target_data:
-            # Deep comparison of template sections
-            source_template = source_data['template']
-            target_template = target_data['template']
-            
-            # Compare template path
-            if 'path' in source_template and 'path' in target_template:
-                if source_template['path'] != target_template['path']:
-                    diff['template'] = {
-                        'old': target_template,
-                        'new': source_template
-                    }
-            # Compare template type
-            elif 'type' in source_template and 'type' in target_template:
-                if source_template['type'] != target_template['type']:
-                    diff['template'] = {
-                        'old': target_template,
-                        'new': source_template
-                    }
-            # Compare entire template if structure differs
-            elif str(source_template) != str(target_template):
-                diff['template'] = {
-                    'old': target_template,
-                    'new': source_template
-                }
+            template_diff = self._compare_templates(
+                source_data['template'], 
+                target_data['template']
+            )
         
-        return diff
+        return {
+            'added': added,
+            'modified': modified,
+            'unchanged': unchanged,
+            'deleted': deleted,
+            'template': template_diff
+        }
 
     def sync_parameters(self, source_file: str, target_file: str, 
                         params_to_sync: Optional[List[str]] = None,
