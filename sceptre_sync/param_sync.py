@@ -19,6 +19,8 @@ from typing import Dict, List, Optional, Set, Tuple
 import ruamel.yaml
 from ruamel.yaml.comments import CommentedMap
 
+from .common import calculate_total_changes, format_diff_summary
+
 
 class ParamSync:
     """Main class for parameter synchronization operations."""
@@ -457,11 +459,9 @@ def main():
     
     # Print summary
     if diff:  # Only print summary if file wasn't filtered out
-        total_changes = len(diff['added']) + len(diff['modified']) + len(diff['deleted']) + (1 if diff['template'] else 0)
-        if total_changes > 0:
-            action = "Would apply" if args.dry_run else "Applied"
-            template_changes = 1 if diff['template'] else 0
-            print(f"\n{action} {total_changes} changes ({len(diff['added'])} additions, {len(diff['modified'])} modifications, {len(diff['deleted'])} deletions, {template_changes} template changes)")
+        summary = format_diff_summary(diff, args.dry_run)
+        if summary:
+            print(f"\n{summary}")
     
     return 0
 

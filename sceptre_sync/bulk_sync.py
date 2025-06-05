@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 from .param_sync import ParamSync
+from .common import calculate_total_changes
 
 
 class BulkParamSync:
@@ -188,7 +189,7 @@ class BulkParamSync:
             # Print diff
             self.param_sync.print_diff(diff)
             
-            total_changes = len(diff['added']) + len(diff['modified']) + len(diff['deleted']) + (1 if diff['template'] else 0)
+            total_changes = calculate_total_changes(diff)
             
             if total_changes == 0:
                 print("No changes needed.")

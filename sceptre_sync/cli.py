@@ -11,6 +11,7 @@ from typing import List, Optional
 
 from .param_sync import ParamSync, main as param_sync_main
 from .bulk_sync import BulkParamSync, main as bulk_sync_main
+from .common import format_diff_summary
 
 
 def main(args: Optional[List[str]] = None) -> int:
@@ -93,11 +94,9 @@ def main(args: Optional[List[str]] = None) -> int:
                 param_sync.print_diff(diff)
                 
                 # Print summary
-                total_changes = len(diff['added']) + len(diff['modified']) + len(diff['deleted']) + (1 if diff['template'] else 0)
-                if total_changes > 0:
-                    action = "Would apply" if parsed_args.dry_run else "Applied"
-                    template_changes = 1 if diff['template'] else 0
-                    print(f"\n{action} {total_changes} changes ({len(diff['added'])} additions, {len(diff['modified'])} modifications, {len(diff['deleted'])} deletions, {template_changes} template changes)")
+                summary = format_diff_summary(diff, parsed_args.dry_run)
+                if summary:
+                    print(f"\n{summary}")
         
     elif parsed_args.command == "bulk":
         # Call bulk sync
