@@ -7,15 +7,14 @@ across multiple files and directories.
 """
 
 import argparse
-import fnmatch
 import os
 import sys
 import re
 import glob
-from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from .param_sync import ParamSync
+from .common import calculate_total_changes
 
 
 class BulkParamSync:
@@ -29,7 +28,7 @@ class BulkParamSync:
             config_file: Path to the configuration file defining sync rules
         """
         self.param_sync = ParamSync(config_file)
-    
+
     def find_matching_files(self, pattern: str) -> List[str]:
         """
         Find all files matching the given pattern using glob.
@@ -42,11 +41,12 @@ class BulkParamSync:
         """
         # Use glob directly which is more efficient and safer
         return glob.glob(pattern, recursive=True)
-    
-    def generate_file_pairs(self, source_pattern: str, target_pattern: str) -> List[Tuple[str, str]]:
+
+    def generate_file_pairs(self, source_pattern: str,
+                            target_pattern: str) -> List[Tuple[str, str]]:
         """
         Generate pairs of source and target files based on patterns.
-        
+
         This version maps files between environment directories by replacing
         the environment name in the path.
 
@@ -60,31 +60,31 @@ class BulkParamSync:
         # Extract environment names from patterns
         source_env_match = re.search(r'/(di-[^/]+)/', source_pattern)
         target_env_match = re.search(r'/(di-[^/]+)/', target_pattern)
-        
+
         # Find all source files
         source_files = self.find_matching_files(source_pattern)
-        
+
         if not source_files:
             print(f"No source files found matching pattern: {source_pattern}")
             return []
-            
+
         print(f"Found {len(source_files)} source files")
-        
+
         # Generate file pairs
         file_pairs = []
-        
+
         # If we have environment patterns, use them for mapping
         if source_env_match and target_env_match:
             source_env = source_env_match.group(1)
             target_env = target_env_match.group(1)
-            
+
             print(f"Source environment: {source_env}")
             print(f"Target environment: {target_env}")
-            
+
             for source_file in source_files:
                 # Create target file path by replacing environment name
                 target_file = source_file.replace(f"/{source_env}/", f"/{target_env}/")
-                
+
                 # Check if target file exists
                 if os.path.exists(target_file):
                     file_pairs.append((source_file, target_file))
@@ -93,13 +93,13 @@ class BulkParamSync:
         else:
             # For non-environment patterns, try direct mapping
             target_files = self.find_matching_files(target_pattern)
-            
+
             if not target_files:
                 print(f"No target files found matching pattern: {target_pattern}")
                 return []
-                
+
             print(f"Found {len(target_files)} target files")
-            
+
             # If we have exactly one source and one target, pair them
             if len(source_files) == 1 and len(target_files) == 1:
                 file_pairs.append((source_files[0], target_files[0]))
@@ -112,13 +112,13 @@ class BulkParamSync:
                         if source_filename == target_filename:
                             file_pairs.append((source_file, target_file))
                             break
-        
+
         return file_pairs
-    
-    def sync_bulk(self, source_pattern: str, target_pattern: str, 
-                 dry_run: bool = False, interactive: bool = True,
-                 sync_template: bool = False, yes_to_all: bool = False,
-                 filter_spec: Optional[str] = None) -> Dict:
+
+    def sync_bulk(self, source_pattern: str, target_pattern: str,
+                  dry_run: bool = False, interactive: bool = True,
+                  sync_template: bool = False, yes_to_all: bool = False,
+                  filter_spec: Optional[str] = None) -> Dict:
         """
         Synchronize parameters across multiple file pairs.
 
@@ -140,15 +140,15 @@ class BulkParamSync:
         print(f"Auto-apply changes: {yes_to_all}")
         if filter_spec:
             print(f"Filter: {filter_spec}")
-        
+
         file_pairs = self.generate_file_pairs(source_pattern, target_pattern)
-        
+
         if not file_pairs:
             print("No matching file pairs found.")
             return {'total_files': 0, 'changed_files': 0, 'total_changes': 0}
-        
+
         print(f"Found {len(file_pairs)} file pairs to process.")
-        
+
         summary = {
             'total_files': len(file_pairs),
             'changed_files': 0,
@@ -156,64 +156,92 @@ class BulkParamSync:
             'file_changes': {},
             'filtered_files': 0
         }
-        
+
         for source_file, target_file in file_pairs:
             print(f"\nProcessing: {source_file} -> {target_file}")
+
+            # Check if we have sync rules (new multi-key approach)
+            sync_rules = self.param_sync.get_sync_rules(source_file)
             
-            # Determine parameters to sync based on source file
-            params_to_sync = self.param_sync.get_sync_params(source_file)
-            
-            if not params_to_sync:
-                print(f"No sync parameters defined for {source_file}, skipping.")
-                continue
-            
-            # Determine parameters to delete based on source file
-            params_to_delete = self.param_sync.get_delete_params(source_file)
-            
-            # Determine if template should be synced
-            should_sync_template = sync_template or self.param_sync.should_sync_template(source_file)
-            
-            # Generate diff
-            diff = self.param_sync.sync_parameters(
-                source_file, target_file, params_to_sync, params_to_delete,
-                dry_run=True, sync_template=should_sync_template,
-                filter_spec=filter_spec
-            )
-            
+            if sync_rules:
+                # New multi-key sync with static values support!
+                print(f"Using multi-key sync rules for {source_file}")
+                
+                # Generate diff using the multi-key sync
+                diff = self.param_sync.sync_parameters(
+                    source_file, target_file,
+                    dry_run=True, 
+                    sync_template=sync_template,
+                    filter_spec=filter_spec
+                )
+            else:
+                # Fallback to old single-key approach for backward compatibility
+                # Determine parameters to sync based on source file
+                params_to_sync = self.param_sync.get_sync_params(source_file)
+
+                if not params_to_sync:
+                    print(f"No sync parameters defined for {source_file}, skipping.")
+                    continue
+
+                # Determine parameters to delete based on source file
+                params_to_delete = self.param_sync.get_delete_params(source_file)
+
+                # Determine if template should be synced
+                should_sync_template = (
+                    sync_template or self.param_sync.should_sync_template(source_file)
+                )
+
+                # Generate diff using old single-key approach
+                diff = self.param_sync.sync_parameters(
+                    source_file, target_file, params_to_sync, params_to_delete,
+                    dry_run=True, sync_template=should_sync_template,
+                    filter_spec=filter_spec
+                )
+
             # Check if file was filtered out
             if not diff and filter_spec:
                 summary['filtered_files'] += 1
                 continue
-                
+
             # Print diff
             self.param_sync.print_diff(diff)
-            
-            total_changes = len(diff['added']) + len(diff['modified']) + len(diff['deleted']) + (1 if diff['template'] else 0)
-            
+
+            total_changes = calculate_total_changes(diff)
+
             if total_changes == 0:
                 print("No changes needed.")
                 continue
-            
+
             # Determine whether to apply changes
             proceed = True
-            
+
             # If not in yes_to_all mode and interactive mode is on, prompt for confirmation
             if not yes_to_all and interactive and not dry_run:
                 response = input("\nApply these changes? [y/N] ").lower()
                 proceed = response in ('y', 'yes')
-            
+
             # Apply changes if confirmed or yes_to_all
             if proceed and not dry_run:
-                self.param_sync.sync_parameters(
-                    source_file, target_file, params_to_sync, params_to_delete,
-                    dry_run=False, sync_template=should_sync_template,
-                    filter_spec=filter_spec
-                )
+                if sync_rules:
+                    # Apply with multi-key sync
+                    self.param_sync.sync_parameters(
+                        source_file, target_file,
+                        dry_run=False,
+                        sync_template=sync_template,
+                        filter_spec=filter_spec
+                    )
+                else:
+                    # Apply with old single-key approach
+                    self.param_sync.sync_parameters(
+                        source_file, target_file, params_to_sync, params_to_delete,
+                        dry_run=False, sync_template=should_sync_template,
+                        filter_spec=filter_spec
+                    )
                 print("Changes applied.")
                 summary['changed_files'] += 1
                 summary['total_changes'] += total_changes
                 summary['file_changes'][target_file] = total_changes
-            
+
         return summary
 
 
@@ -236,14 +264,16 @@ def main():
                         help="Sync the template section")
     parser.add_argument("--yes", "-y", action="store_true",
                         help="Automatically apply all changes without prompting")
-    parser.add_argument("--filter", "-f", 
-                        help="Filter by field value (format: field.path:substring)")
-    
+    parser.add_argument(
+        "--filter", "-f",
+        help="Filter by field value (format: field.path:substring)"
+    )
+
     args = parser.parse_args()
-    
+
     # Initialize BulkParamSync
     bulk_sync = BulkParamSync(args.config)
-    
+
     # Perform bulk sync operation
     summary = bulk_sync.sync_bulk(
         args.source_pattern,
@@ -254,7 +284,7 @@ def main():
         args.yes,
         args.filter
     )
-    
+
     # Print summary
     print("\nSummary:")
     print(f"  Files processed: {summary['total_files']}")
@@ -262,7 +292,7 @@ def main():
         print(f"  Files filtered out: {summary['filtered_files']}")
     print(f"  Files changed: {summary['changed_files']}")
     print(f"  Total changes: {summary['total_changes']}")
-    
+
     return 0
 
 

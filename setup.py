@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(
-    name="sceptre_config_sync",
+    name="sceptre_sync",
     version="0.1.0",
     packages=find_packages(),
     install_requires=[
@@ -10,12 +10,12 @@ setup(
     ],
     entry_points={
         "console_scripts": [
-            "sceptre-sync=sceptre_config_sync.cli:main",
+            "sceptre-sync=sceptre_sync.cli:main",
         ],
     },
     author="Jon Staples",
     author_email="example@example.com",
-    description="A utility for synchronizing configuration parameters between YAML files",
+    description="A utility for synchronizing configuration parameters between Sceptre Config files",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
     classifiers=[
