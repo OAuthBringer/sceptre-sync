@@ -1,0 +1,16 @@
+# Example configuration for parameter sync utility
+# This defines which parameters should be synchronized for different file patterns
+
+template_patterns:
+  # Pattern for API task definitions
+  - pattern: "*/api/tasks/*.yaml"
+    sync_params:
+      - TaskASGMaxCapacity
+    delete_params:
+      - ScalingEnabled  # default is true
+      - EnableCpuScaling # default is true
+      - TaskASGMinCapacity # default is 1
+      - CpuScalingTargetValue # default is 70
+      - ScaleOutCooldownPeriod # default is 30
+      - ScaleInCooldownPeriod # default is 600
+    sync_template: false  # Enable template synchronization for these files
