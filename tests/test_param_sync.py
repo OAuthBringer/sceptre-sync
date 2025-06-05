@@ -6,8 +6,7 @@ is like brain surgery with a spoon - precision matters.
 """
 
 import os
-import tempfile
-import unittest
+import pytest
 from pathlib import Path
 from unittest.mock import Mock, patch, mock_open
 
@@ -15,124 +14,83 @@ import ruamel.yaml
 from sceptre_sync.param_sync import ParamSync
 
 
-class TestParamSync(unittest.TestCase):
+class TestParamSync:
     """Test the ParamSync class functionality."""
-    
-    def setUp(self):
-        """Set up test fixtures."""
-        self.temp_dir = tempfile.mkdtemp()
-        self.param_sync = ParamSync()
-        
-        # Sample YAML content for testing
-        self.source_yaml = """
-template:
-  path: templates/vpc.yaml
-  type: cloudformation
-
-parameters:
-  VpcCidr: "10.0.0.0/16"
-  PublicSubnetCidr: "10.0.1.0/24"
-  PrivateSubnetCidr: "10.0.2.0/24"
-  InstanceType: "t3.micro"
-  Environment: "alpha"
-"""
-        
-        self.target_yaml = """
-template:
-  path: templates/vpc.yaml
-  type: cloudformation
-
-parameters:
-  VpcCidr: "10.1.0.0/16"
-  PublicSubnetCidr: "10.1.1.0/24"
-  PrivateSubnetCidr: "10.1.2.0/24"
-  InstanceType: "t2.micro"
-  Environment: "dev"
-"""
-        
-        self.config_yaml = """
-template_patterns:
-  - pattern: "*/vpc.yaml"
-    sync_params:
-      - VpcCidr
-      - PublicSubnetCidr
-      - PrivateSubnetCidr
-    delete_params:
-      - DeprecatedParam
-    sync_template: true
-  - pattern: "*/api/*.yaml"
-    sync_params:
-      - CPUReservation
-      - MemoryReservation
-"""
-    
-    def tearDown(self):
-        """Clean up test fixtures."""
-        # Clean up temp directory
-        import shutil
-        shutil.rmtree(self.temp_dir, ignore_errors=True)
     
     def test_init_without_config(self):
         """Test initialization without config file."""
         sync = ParamSync()
-        self.assertIsInstance(sync.yaml, ruamel.yaml.YAML)
-        self.assertEqual(sync.config, {})
+        assert isinstance(sync.yaml, ruamel.yaml.YAML)
+        assert sync.config == {}
     
-    def test_init_with_config(self):
+    def test_init_with_config(self, temp_dir, yaml_content):
         """Test initialization with config file."""
-        config_file = os.path.join(self.temp_dir, "config.yaml")
+        config_file = os.path.join(temp_dir, "config.yaml")
         with open(config_file, 'w') as f:
-            f.write(self.config_yaml)
+            f.write(yaml_content['config_with_delete'])
         
         sync = ParamSync(config_file)
-        self.assertIn('template_patterns', sync.config)
-        self.assertEqual(len(sync.config['template_patterns']), 2)
+        assert 'template_patterns' in sync.config
+        assert len(sync.config['template_patterns']) == 2
     
-    def test_load_config_file_not_found(self):
+    def test_load_config_file_not_found(self, temp_dir):
         """Test loading non-existent config file."""
+        # This test verifies the actual error handling, not just SystemExit
         sync = ParamSync()
-        with self.assertRaises(SystemExit):
-            sync.load_config("non_existent_file.yaml")
+        non_existent_file = os.path.join(temp_dir, "definitely_does_not_exist.yaml")
+        
+        # Use the capture_output context manager from conftest
+        from tests.conftest import capture_output
+        
+        with capture_output() as (stdout, stderr):
+            with pytest.raises(SystemExit) as cm:
+                sync.load_config(non_existent_file)
+            # Verify it exits with code 1
+            assert cm.value.code == 1
+        
+        # Verify error message was printed
+        error_output = stderr.getvalue()
+        assert "Error loading config file" in error_output
     
-    def test_get_sync_params_with_matching_pattern(self):
+    def test_get_sync_params_with_matching_pattern(self, temp_dir, yaml_content):
         """Test getting sync parameters for matching file pattern."""
-        config_file = os.path.join(self.temp_dir, "config.yaml")
+        config_file = os.path.join(temp_dir, "config.yaml")
         with open(config_file, 'w') as f:
-            f.write(self.config_yaml)
+            f.write(yaml_content['config_with_delete'])
         
         sync = ParamSync(config_file)
         params = sync.get_sync_params("config/di-alpha/vpc.yaml")
-        self.assertEqual(params, ["VpcCidr", "PublicSubnetCidr", "PrivateSubnetCidr"])
+        assert params == ["VpcCidr", "PublicSubnetCidr", "PrivateSubnetCidr"]
     
-    def test_get_sync_params_no_match(self):
+    def test_get_sync_params_no_match(self, temp_dir, yaml_content):
         """Test getting sync parameters for non-matching file pattern."""
-        config_file = os.path.join(self.temp_dir, "config.yaml")
+        config_file = os.path.join(temp_dir, "config.yaml")
         with open(config_file, 'w') as f:
-            f.write(self.config_yaml)
+            f.write(yaml_content['config_with_delete'])
         
         sync = ParamSync(config_file)
         params = sync.get_sync_params("config/di-alpha/database.yaml")
-        self.assertEqual(params, [])
+        assert params == []
     
-    def test_get_delete_params(self):
+    def test_get_delete_params(self, temp_dir, yaml_content):
         """Test getting delete parameters for matching file pattern."""
-        config_file = os.path.join(self.temp_dir, "config.yaml")
+        config_file = os.path.join(temp_dir, "config.yaml")
         with open(config_file, 'w') as f:
-            f.write(self.config_yaml)
+            f.write(yaml_content['config_with_delete'])
         
         sync = ParamSync(config_file)
         params = sync.get_delete_params("config/di-alpha/vpc.yaml")
-        self.assertEqual(params, ["DeprecatedParam"])
+        assert params == ["DeprecatedParam"]
     
-    def test_should_sync_template(self):
+    def test_should_sync_template(self, temp_dir, yaml_content):
         """Test checking if template should be synced."""
-        config_file = os.path.join(self.temp_dir, "config.yaml")
+        config_file = os.path.join(temp_dir, "config.yaml")
         with open(config_file, 'w') as f:
-            f.write(self.config_yaml)
+            f.write(yaml_content['config_with_delete'])
         
         sync = ParamSync(config_file)
-        self.assertTrue(sync.should_sync_template("config/di-alpha/vpc.yaml"))
-        self.assertFalse(sync.should_sync_template("config/di-alpha/api/tasks.yaml"))
+        assert sync.should_sync_template("config/di-alpha/vpc.yaml") is True
+        assert sync.should_sync_template("config/di-alpha/api/tasks.yaml") is False
     
     def test_matches_filter_simple_field(self):
         """Test filter matching with simple field."""
@@ -144,50 +102,50 @@ template_patterns:
         }
         
         sync = ParamSync()
-        self.assertTrue(sync.matches_filter(data, "template.path:enhanced"))
-        self.assertFalse(sync.matches_filter(data, "template.path:standard"))
+        assert sync.matches_filter(data, "template.path:enhanced") is True
+        assert sync.matches_filter(data, "template.path:standard") is False
     
     def test_matches_filter_no_filter(self):
         """Test filter matching with no filter specified."""
         data = {"any": "data"}
         sync = ParamSync()
-        self.assertTrue(sync.matches_filter(data, None))
-        self.assertTrue(sync.matches_filter(data, ""))
+        assert sync.matches_filter(data, None) is True
+        assert sync.matches_filter(data, "") is True
     
     def test_matches_filter_invalid_field_path(self):
         """Test filter matching with invalid field path."""
         data = {"template": {"path": "test.yaml"}}
         sync = ParamSync()
-        self.assertFalse(sync.matches_filter(data, "template.missing:value"))
+        assert sync.matches_filter(data, "template.missing:value") is False
     
-    def test_load_yaml_file(self):
+    def test_load_yaml_file(self, temp_dir, yaml_content):
         """Test loading YAML file."""
-        yaml_file = os.path.join(self.temp_dir, "test.yaml")
+        yaml_file = os.path.join(temp_dir, "test.yaml")
         with open(yaml_file, 'w') as f:
-            f.write(self.source_yaml)
+            f.write(yaml_content['vpc_source'])
         
         sync = ParamSync()
         data = sync.load_yaml_file(yaml_file)
         
-        self.assertIn('parameters', data)
-        self.assertEqual(data['parameters']['VpcCidr'], "10.0.0.0/16")
+        assert 'parameters' in data
+        assert data['parameters']['VpcCidr'] == "10.0.0.0/16"
     
-    def test_save_yaml_file(self):
+    def test_save_yaml_file(self, temp_dir, yaml_content):
         """Test saving YAML file."""
-        yaml_file = os.path.join(self.temp_dir, "output.yaml")
+        yaml_file = os.path.join(temp_dir, "output.yaml")
         
         sync = ParamSync()
         yaml = ruamel.yaml.YAML()
-        data = yaml.load(self.source_yaml)
+        data = yaml.load(yaml_content['vpc_source'])
         
         sync.save_yaml_file(yaml_file, data)
         
         # Verify file was saved and can be loaded
-        self.assertTrue(os.path.exists(yaml_file))
+        assert os.path.exists(yaml_file)
         loaded_data = sync.load_yaml_file(yaml_file)
-        self.assertEqual(loaded_data['parameters']['VpcCidr'], "10.0.0.0/16")
+        assert loaded_data['parameters']['VpcCidr'] == "10.0.0.0/16"
     
-    def test_generate_diff_parameters_added(self):
+    def test_generate_diff_parameters_added(self, sync_result_factory):
         """Test diff generation for added parameters."""
         sync = ParamSync()
         source_data = {
@@ -204,11 +162,11 @@ template_patterns:
         
         diff = sync.generate_diff(source_data, target_data, ["Param2"], [], False)
         
-        self.assertIn("Param2", diff['added'])
-        self.assertEqual(diff['added']['Param2'], "value2")
-        self.assertEqual(len(diff['modified']), 0)
+        assert "Param2" in diff['added']
+        assert diff['added']['Param2'] == "value2"
+        assert len(diff['modified']) == 0
     
-    def test_generate_diff_parameters_modified(self):
+    def test_generate_diff_parameters_modified(self, sync_result_factory):
         """Test diff generation for modified parameters."""
         sync = ParamSync()
         source_data = {
@@ -224,11 +182,11 @@ template_patterns:
         
         diff = sync.generate_diff(source_data, target_data, ["Param1"], [], False)
         
-        self.assertIn("Param1", diff['modified'])
-        self.assertEqual(diff['modified']['Param1']['old'], "old_value")
-        self.assertEqual(diff['modified']['Param1']['new'], "new_value")
+        assert "Param1" in diff['modified']
+        assert diff['modified']['Param1']['old'] == "old_value"
+        assert diff['modified']['Param1']['new'] == "new_value"
     
-    def test_generate_diff_parameters_unchanged(self):
+    def test_generate_diff_parameters_unchanged(self, sync_result_factory):
         """Test diff generation for unchanged parameters."""
         sync = ParamSync()
         source_data = {
@@ -244,11 +202,11 @@ template_patterns:
         
         diff = sync.generate_diff(source_data, target_data, ["Param1"], [], False)
         
-        self.assertIn("Param1", diff['unchanged'])
-        self.assertEqual(len(diff['added']), 0)
-        self.assertEqual(len(diff['modified']), 0)
+        assert "Param1" in diff['unchanged']
+        assert len(diff['added']) == 0
+        assert len(diff['modified']) == 0
     
-    def test_generate_diff_parameters_deleted(self):
+    def test_generate_diff_parameters_deleted(self, sync_result_factory):
         """Test diff generation for deleted parameters."""
         sync = ParamSync()
         source_data = {"parameters": {}}
@@ -260,10 +218,10 @@ template_patterns:
         
         diff = sync.generate_diff(source_data, target_data, [], ["DeprecatedParam"], False)
         
-        self.assertIn("DeprecatedParam", diff['deleted'])
-        self.assertEqual(diff['deleted']['DeprecatedParam'], "to_be_deleted")
+        assert "DeprecatedParam" in diff['deleted']
+        assert diff['deleted']['DeprecatedParam'] == "to_be_deleted"
     
-    def test_generate_diff_template_sync(self):
+    def test_generate_diff_template_sync(self, sync_result_factory):
         """Test diff generation with template sync."""
         sync = ParamSync()
         source_data = {
@@ -277,20 +235,20 @@ template_patterns:
         
         diff = sync.generate_diff(source_data, target_data, [], [], True)
         
-        self.assertIsNotNone(diff['template'])
-        self.assertEqual(diff['template']['old']['path'], "old/path.yaml")
-        self.assertEqual(diff['template']['new']['path'], "new/path.yaml")
+        assert diff['template'] is not None
+        assert diff['template']['old']['path'] == "old/path.yaml"
+        assert diff['template']['new']['path'] == "new/path.yaml"
     
-    def test_sync_parameters_dry_run(self):
+    def test_sync_parameters_dry_run(self, temp_dir, yaml_content):
         """Test parameter synchronization in dry run mode."""
         # Create test files
-        source_file = os.path.join(self.temp_dir, "source.yaml")
-        target_file = os.path.join(self.temp_dir, "target.yaml")
+        source_file = os.path.join(temp_dir, "source.yaml")
+        target_file = os.path.join(temp_dir, "target.yaml")
         
         with open(source_file, 'w') as f:
-            f.write(self.source_yaml)
+            f.write(yaml_content['vpc_source'])
         with open(target_file, 'w') as f:
-            f.write(self.target_yaml)
+            f.write(yaml_content['vpc_target'])
         
         sync = ParamSync()
         diff = sync.sync_parameters(
@@ -300,22 +258,22 @@ template_patterns:
         )
         
         # Verify diff is correct
-        self.assertIn("VpcCidr", diff['modified'])
+        assert "VpcCidr" in diff['modified']
         
         # Verify target file was NOT modified
         target_data = sync.load_yaml_file(target_file)
-        self.assertEqual(target_data['parameters']['VpcCidr'], "10.1.0.0/16")
+        assert target_data['parameters']['VpcCidr'] == "10.1.0.0/16"
     
-    def test_sync_parameters_actual_sync(self):
+    def test_sync_parameters_actual_sync(self, temp_dir, yaml_content):
         """Test parameter synchronization with actual file modification."""
         # Create test files
-        source_file = os.path.join(self.temp_dir, "source.yaml")
-        target_file = os.path.join(self.temp_dir, "target.yaml")
+        source_file = os.path.join(temp_dir, "source.yaml")
+        target_file = os.path.join(temp_dir, "target.yaml")
         
         with open(source_file, 'w') as f:
-            f.write(self.source_yaml)
+            f.write(yaml_content['vpc_source'])
         with open(target_file, 'w') as f:
-            f.write(self.target_yaml)
+            f.write(yaml_content['vpc_target'])
         
         sync = ParamSync()
         diff = sync.sync_parameters(
@@ -325,18 +283,20 @@ template_patterns:
         )
         
         # Verify diff is correct
-        self.assertIn("VpcCidr", diff['modified'])
-        self.assertIn("Environment", diff['modified'])
+        assert "VpcCidr" in diff['modified']
+        assert "Environment" in diff['modified']
         
         # Verify target file WAS modified
         target_data = sync.load_yaml_file(target_file)
-        self.assertEqual(target_data['parameters']['VpcCidr'], "10.0.0.0/16")
-        self.assertEqual(target_data['parameters']['Environment'], "alpha")
+        assert target_data['parameters']['VpcCidr'] == "10.0.0.0/16"
+        assert target_data['parameters']['Environment'] == "alpha"
         # Verify unsynced parameters remain unchanged
-        self.assertEqual(target_data['parameters']['InstanceType'], "t2.micro")
+        assert target_data['parameters']['InstanceType'] == "t2.micro"
     
     def test_print_diff_no_changes(self):
         """Test diff printing with no changes."""
+        from tests.conftest import capture_output
+        
         sync = ParamSync()
         diff = {
             'added': {},
@@ -346,21 +306,16 @@ template_patterns:
             'template': None
         }
         
-        # Capture stdout
-        import io
-        import sys
-        captured_output = io.StringIO()
-        sys.stdout = captured_output
+        with capture_output() as (stdout, stderr):
+            sync.print_diff(diff)
         
-        sync.print_diff(diff)
-        
-        sys.stdout = sys.__stdout__
-        output = captured_output.getvalue()
-        
-        self.assertIn("No changes to apply", output)
+        output = stdout.getvalue()
+        assert "No changes to apply" in output
     
     def test_print_diff_with_changes(self):
         """Test diff printing with various changes."""
+        from tests.conftest import capture_output
+        
         sync = ParamSync()
         diff = {
             'added': {'NewParam': 'new_value'},
@@ -370,25 +325,14 @@ template_patterns:
             'template': {'old': {'path': 'old.yaml'}, 'new': {'path': 'new.yaml'}}
         }
         
-        # Capture stdout
-        import io
-        import sys
-        captured_output = io.StringIO()
-        sys.stdout = captured_output
+        with capture_output() as (stdout, stderr):
+            sync.print_diff(diff)
         
-        sync.print_diff(diff)
-        
-        sys.stdout = sys.__stdout__
-        output = captured_output.getvalue()
-        
-        self.assertIn("Parameters to add:", output)
-        self.assertIn("+ NewParam: new_value", output)
-        self.assertIn("Parameters to modify:", output)
-        self.assertIn("~ ModParam: old_val -> new_val", output)
-        self.assertIn("Parameters to delete:", output)
-        self.assertIn("- DelParam: deleted_value", output)
-        self.assertIn("Template to modify:", output)
-
-
-if __name__ == '__main__':
-    unittest.main()
+        output = stdout.getvalue()
+        assert "Parameters to add:" in output
+        assert "+ NewParam: new_value" in output
+        assert "Parameters to modify:" in output
+        assert "~ ModParam: old_val -> new_val" in output
+        assert "Parameters to delete:" in output
+        assert "- DelParam: deleted_value" in output
+        assert "Template to modify:" in output

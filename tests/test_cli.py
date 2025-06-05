@@ -33,17 +33,14 @@ class TestCLI:
         assert "bulk" in captured.out
 
     @patch('sceptre_sync.cli.ParamSync')
-    def test_sync_command_basic(self, mock_param_sync_class):
+    def test_sync_command_basic(self, mock_param_sync_class, mock_sync_result):
         """Test basic sync command execution."""
         # Set up mocks
         mock_param_sync = Mock()
         mock_param_sync_class.return_value = mock_param_sync
         mock_param_sync.sync_parameters.return_value = {
-            'added': {'NewParam': 'value'},
-            'modified': {},
-            'deleted': {},
-            'unchanged': {},
-            'template': None
+            **mock_sync_result,
+            'added': {'NewParam': 'value'}
         }
         
         # Test with dry-run (no prompt needed)
@@ -59,14 +56,12 @@ class TestCLI:
         mock_param_sync.print_diff.assert_called_once()
 
     @patch('sceptre_sync.cli.ParamSync')
-    def test_sync_command_with_all_options(self, mock_param_sync_class):
+    def test_sync_command_with_all_options(self, mock_param_sync_class, mock_sync_result):
         """Test sync command with all options specified."""
         # Set up mocks
         mock_param_sync = Mock()
         mock_param_sync_class.return_value = mock_param_sync
-        mock_param_sync.sync_parameters.return_value = {
-            'added': {}, 'modified': {}, 'deleted': {}, 'unchanged': {}, 'template': None
-        }
+        mock_param_sync.sync_parameters.return_value = mock_sync_result
         
         # Test with all options
         args = [
@@ -94,17 +89,14 @@ class TestCLI:
 
     @patch('sceptre_sync.cli.ParamSync')
     @patch('builtins.input', return_value='y')
-    def test_sync_command_with_user_confirmation_yes(self, mock_input, mock_param_sync_class):
+    def test_sync_command_with_user_confirmation_yes(self, mock_input, mock_param_sync_class, mock_sync_result):
         """Test sync command when user confirms changes."""
         # Set up mocks
         mock_param_sync = Mock()
         mock_param_sync_class.return_value = mock_param_sync
         mock_param_sync.sync_parameters.return_value = {
-            'added': {'NewParam': 'value'},
-            'modified': {},
-            'deleted': {},
-            'unchanged': {},
-            'template': None
+            **mock_sync_result,
+            'added': {'NewParam': 'value'}
         }
         
         # Test without --yes flag (prompt expected)
@@ -136,37 +128,32 @@ class TestCLI:
         mock_param_sync.sync_parameters.assert_not_called()
 
     @patch('sceptre_sync.cli.ParamSync')
-    def test_sync_command_with_changes_summary(self, mock_param_sync_class, capsys):
+    def test_sync_command_with_changes_summary(self, mock_param_sync_class, mock_sync_result_with_changes, capsys):
         """Test that sync command prints correct summary of changes."""
         # Set up mocks
         mock_param_sync = Mock()
         mock_param_sync_class.return_value = mock_param_sync
-        mock_param_sync.sync_parameters.return_value = {
-            'added': {'Param1': 'value1', 'Param2': 'value2'},
-            'modified': {'Param3': {'old': 'old', 'new': 'new'}},
-            'deleted': {'Param4': 'deleted'},
-            'unchanged': {},
-            'template': {'old': {'path': 'old.yaml'}, 'new': {'path': 'new.yaml'}}
-        }
+        mock_param_sync.sync_parameters.return_value = mock_sync_result_with_changes
         
         args = ["sync", "source.yaml", "target.yaml", "--dry-run"]
         exit_code = main(args)
         
         captured = capsys.readouterr()
-        assert "Would apply 5 changes" in captured.out
-        assert "2 additions" in captured.out
+        assert "Would apply 4 changes" in captured.out
+        assert "1 additions" in captured.out
         assert "1 modifications" in captured.out
         assert "1 deletions" in captured.out
         assert "1 template changes" in captured.out
 
     @patch('sceptre_sync.cli.ParamSync')
-    def test_sync_command_with_no_changes(self, mock_param_sync_class, capsys):
+    def test_sync_command_with_no_changes(self, mock_param_sync_class, mock_sync_result, capsys):
         """Test sync command when no changes are needed."""
         # Set up mocks
         mock_param_sync = Mock()
         mock_param_sync_class.return_value = mock_param_sync
         mock_param_sync.sync_parameters.return_value = {
-            'added': {}, 'modified': {}, 'deleted': {}, 'unchanged': {'Param': 'value'}, 'template': None
+            **mock_sync_result,
+            'unchanged': {'Param': 'value'}
         }
         
         args = ["sync", "source.yaml", "target.yaml", "--dry-run"]
@@ -194,17 +181,12 @@ class TestCLI:
         mock_param_sync.print_diff.assert_not_called()
 
     @patch('sceptre_sync.cli.BulkParamSync')
-    def test_bulk_command_basic(self, mock_bulk_sync_class, capsys):
+    def test_bulk_command_basic(self, mock_bulk_sync_class, mock_bulk_sync_summary, capsys):
         """Test basic bulk command execution."""
         # Set up mocks
         mock_bulk_sync = Mock()
         mock_bulk_sync_class.return_value = mock_bulk_sync
-        mock_bulk_sync.sync_bulk.return_value = {
-            'total_files': 5,
-            'changed_files': 3,
-            'total_changes': 10,
-            'file_changes': {}
-        }
+        mock_bulk_sync.sync_bulk.return_value = mock_bulk_sync_summary
         
         args = [
             "bulk",
@@ -235,17 +217,14 @@ class TestCLI:
         assert "Total changes: 10" in captured.out
 
     @patch('sceptre_sync.cli.BulkParamSync')
-    def test_bulk_command_with_all_options(self, mock_bulk_sync_class, capsys):
+    def test_bulk_command_with_all_options(self, mock_bulk_sync_class, mock_bulk_sync_summary, capsys):
         """Test bulk command with all options specified."""
         # Set up mocks
         mock_bulk_sync = Mock()
         mock_bulk_sync_class.return_value = mock_bulk_sync
         mock_bulk_sync.sync_bulk.return_value = {
-            'total_files': 10,
-            'changed_files': 7,
-            'total_changes': 25,
-            'filtered_files': 2,
-            'file_changes': {}
+            **mock_bulk_sync_summary,
+            'filtered_files': 2
         }
         
         args = [
@@ -330,12 +309,12 @@ class TestCLI:
 
     @patch('sceptre_sync.param_sync.ParamSync.sync_parameters')
     @patch('sceptre_sync.param_sync.ParamSync.print_diff')
-    def test_cli_integration_with_param_sync(self, mock_print, mock_sync):
+    def test_cli_integration_with_param_sync(self, mock_print, mock_sync, mock_sync_result):
         """Test that CLI correctly integrates with ParamSync."""
         # This is more of an integration test but important for coverage
         mock_sync.return_value = {
-            'added': {'TestParam': 'value'},
-            'modified': {}, 'deleted': {}, 'unchanged': {}, 'template': None
+            **mock_sync_result,
+            'added': {'TestParam': 'value'}
         }
         
         args = ["sync", "source.yaml", "target.yaml", "--params", "TestParam", "--yes"]
@@ -346,13 +325,11 @@ class TestCLI:
         mock_print.assert_called_once()
 
     @patch('sceptre_sync.cli.ParamSync')
-    def test_short_option_flags(self, mock_param_sync_class):
+    def test_short_option_flags(self, mock_param_sync_class, mock_sync_result):
         """Test that short option flags work correctly."""
         mock_param_sync = Mock()
         mock_param_sync_class.return_value = mock_param_sync
-        mock_param_sync.sync_parameters.return_value = {
-            'added': {}, 'modified': {}, 'deleted': {}, 'unchanged': {}, 'template': None
-        }
+        mock_param_sync.sync_parameters.return_value = mock_sync_result
         
         # Test short flags for sync command
         args = ["sync", "s.yaml", "t.yaml", "-c", "cfg.yaml", "-p", "P1", "-D", "P2", "-d", "-T", "-f", "a:b"]
@@ -364,7 +341,6 @@ class TestCLI:
             "s.yaml", "t.yaml", ["P1"], ["P2"], True, True, "a:b"
         )
 
-    @pytest.mark.integration
     def test_end_to_end_help_command(self, capsys):
         """Integration test for help display."""
         # Test main help
@@ -377,7 +353,6 @@ class TestCLI:
         assert "sync" in captured.out
         assert "bulk" in captured.out
 
-    @pytest.mark.integration
     def test_sync_subcommand_help(self, capsys):
         """Test sync subcommand help."""
         with pytest.raises(SystemExit) as exc_info:
@@ -391,7 +366,6 @@ class TestCLI:
         assert "--dry-run" in captured.out
         assert "--sync-template" in captured.out
 
-    @pytest.mark.integration  
     def test_bulk_subcommand_help(self, capsys):
         """Test bulk subcommand help."""
         with pytest.raises(SystemExit) as exc_info:
