@@ -56,121 +56,161 @@ template_patterns:
         assert bulk_sync.param_sync is not None
         assert bulk_sync.param_sync.config == {}
 
-    @patch('glob.glob')
-    def test_find_matching_files(self, mock_glob):
+    def test_find_matching_files(self):
         """Test finding files with glob patterns."""
-        mock_glob.return_value = [
-            'config/di-alpha/vpc.yaml',
-            'config/di-alpha/api/tasks.yaml'
-        ]
+        # Create real test files
+        config_dir = os.path.join(self.temp_dir, 'config', 'di-alpha')
+        api_dir = os.path.join(config_dir, 'api')
+        os.makedirs(api_dir, exist_ok=True)
         
-        # Mock ParamSync to avoid ruamel.yaml plugin issues
-        with patch('sceptre_sync.bulk_sync.ParamSync'):
-            bulk_sync = BulkParamSync()
-            files = bulk_sync.find_matching_files('config/di-alpha/**/*.yaml')
-            
-            assert len(files) == 2
-            assert 'config/di-alpha/vpc.yaml' in files
-            mock_glob.assert_called_once_with('config/di-alpha/**/*.yaml', recursive=True)
-
-    @patch('glob.glob')
-    def test_find_matching_files_no_matches(self, mock_glob):
-        """Test finding files when no matches exist."""
-        mock_glob.return_value = []
+        # Create test files
+        vpc_file = os.path.join(config_dir, 'vpc.yaml')
+        api_file = os.path.join(api_dir, 'tasks.yaml')
+        
+        with open(vpc_file, 'w') as f:
+            f.write("test: vpc")
+        with open(api_file, 'w') as f:
+            f.write("test: api")
         
         bulk_sync = BulkParamSync()
-        files = bulk_sync.find_matching_files('config/nonexistent/*.yaml')
+        files = bulk_sync.find_matching_files(os.path.join(self.temp_dir, 'config/di-alpha/**/*.yaml'))
+        
+        assert len(files) == 2
+        assert vpc_file in files
+        assert api_file in files
+
+    def test_find_matching_files_no_matches(self):
+        """Test finding files when no matches exist."""
+        bulk_sync = BulkParamSync()
+        files = bulk_sync.find_matching_files(os.path.join(self.temp_dir, 'config/nonexistent/*.yaml'))
         
         assert files == []
 
-    @patch('glob.glob')
-    @patch('os.path.exists')
-    def test_generate_file_pairs_with_environments(self, mock_exists, mock_glob):
+    def test_generate_file_pairs_with_environments(self):
         """Test generating file pairs between environments."""
-        # Setup mocks
-        mock_glob.return_value = [
-            'config/di-alpha/vpc.yaml',
-            'config/di-alpha/api/tasks.yaml',
-            'config/di-alpha/database.yaml'
-        ]
+        # Create real directory structure
+        alpha_dir = os.path.join(self.temp_dir, 'config', 'di-alpha')
+        alpha_api_dir = os.path.join(alpha_dir, 'api')
+        dev_dir = os.path.join(self.temp_dir, 'config', 'di-dev')
+        dev_api_dir = os.path.join(dev_dir, 'api')
         
-        # First two files exist in target, third doesn't
-        mock_exists.side_effect = [True, True, False]
+        os.makedirs(alpha_api_dir, exist_ok=True)
+        os.makedirs(dev_api_dir, exist_ok=True)
         
-        # Mock ParamSync to avoid ruamel.yaml plugin issues
-        with patch('sceptre_sync.bulk_sync.ParamSync'):
-            bulk_sync = BulkParamSync()
-            pairs = bulk_sync.generate_file_pairs(
-                'config/di-alpha/**/*.yaml',
-                'config/di-dev/**/*.yaml'
-            )
-            
-            assert len(pairs) == 2
-            assert ('config/di-alpha/vpc.yaml', 'config/di-dev/vpc.yaml') in pairs
-            assert ('config/di-alpha/api/tasks.yaml', 'config/di-dev/api/tasks.yaml') in pairs
+        # Create source files
+        alpha_vpc = os.path.join(alpha_dir, 'vpc.yaml')
+        alpha_api = os.path.join(alpha_api_dir, 'tasks.yaml')
+        alpha_db = os.path.join(alpha_dir, 'database.yaml')
+        
+        # Create target files (only vpc and api exist)
+        dev_vpc = os.path.join(dev_dir, 'vpc.yaml')
+        dev_api = os.path.join(dev_api_dir, 'tasks.yaml')
+        
+        # Write test content
+        for f in [alpha_vpc, alpha_api, alpha_db, dev_vpc, dev_api]:
+            if f in [alpha_vpc, alpha_api, alpha_db]:  # Source files
+                with open(f, 'w') as file:
+                    file.write(f"test: {os.path.basename(f)}")
+            elif f in [dev_vpc, dev_api]:  # Target files that exist
+                with open(f, 'w') as file:
+                    file.write(f"test: {os.path.basename(f)}")
+        
+        bulk_sync = BulkParamSync()
+        pairs = bulk_sync.generate_file_pairs(
+            os.path.join(self.temp_dir, 'config/di-alpha/**/*.yaml'),
+            os.path.join(self.temp_dir, 'config/di-dev/**/*.yaml')
+        )
+        
+        assert len(pairs) == 2
+        assert (alpha_vpc, dev_vpc) in pairs
+        assert (alpha_api, dev_api) in pairs
+        # database.yaml should not be in pairs as it doesn't exist in dev
 
-    @patch('glob.glob')
-    def test_generate_file_pairs_single_files(self, mock_glob):
+    def test_generate_file_pairs_single_files(self):
         """Test generating pairs when single source and target files."""
-        mock_glob.side_effect = [
-            ['source/file.yaml'],  # source files
-            ['target/file.yaml']   # target files
-        ]
+        # Create real files
+        source_dir = os.path.join(self.temp_dir, 'source')
+        target_dir = os.path.join(self.temp_dir, 'target')
+        os.makedirs(source_dir, exist_ok=True)
+        os.makedirs(target_dir, exist_ok=True)
         
-        # Mock ParamSync to avoid ruamel.yaml plugin issues
-        with patch('sceptre_sync.bulk_sync.ParamSync'):
-            bulk_sync = BulkParamSync()
-            pairs = bulk_sync.generate_file_pairs('source/file.yaml', 'target/file.yaml')
-            
-            assert len(pairs) == 1
-            assert pairs[0] == ('source/file.yaml', 'target/file.yaml')
+        source_file = os.path.join(source_dir, 'file.yaml')
+        target_file = os.path.join(target_dir, 'file.yaml')
+        
+        with open(source_file, 'w') as f:
+            f.write("source: data")
+        with open(target_file, 'w') as f:
+            f.write("target: data")
+        
+        bulk_sync = BulkParamSync()
+        pairs = bulk_sync.generate_file_pairs(
+            os.path.join(source_dir, 'file.yaml'),
+            os.path.join(target_dir, 'file.yaml')
+        )
+        
+        assert len(pairs) == 1
+        assert pairs[0] == (source_file, target_file)
 
-    @patch('glob.glob')
-    def test_generate_file_pairs_by_filename(self, mock_glob):
+    def test_generate_file_pairs_by_filename(self):
         """Test matching files by filename when no environment pattern."""
-        mock_glob.side_effect = [
-            ['dir1/vpc.yaml', 'dir1/api.yaml'],     # source files
-            ['dir2/api.yaml', 'dir2/vpc.yaml']      # target files
-        ]
+        # Create real directory structure
+        dir1 = os.path.join(self.temp_dir, 'dir1')
+        dir2 = os.path.join(self.temp_dir, 'dir2')
+        os.makedirs(dir1, exist_ok=True)
+        os.makedirs(dir2, exist_ok=True)
         
-        # Mock ParamSync to avoid ruamel.yaml plugin issues
-        with patch('sceptre_sync.bulk_sync.ParamSync'):
-            bulk_sync = BulkParamSync()
-            pairs = bulk_sync.generate_file_pairs('dir1/*.yaml', 'dir2/*.yaml')
-            
-            assert len(pairs) == 2
-            # Should match by filename
-            assert ('dir1/vpc.yaml', 'dir2/vpc.yaml') in pairs
-            assert ('dir1/api.yaml', 'dir2/api.yaml') in pairs
+        # Create files in different order to test filename matching
+        vpc1 = os.path.join(dir1, 'vpc.yaml')
+        api1 = os.path.join(dir1, 'api.yaml')
+        api2 = os.path.join(dir2, 'api.yaml')
+        vpc2 = os.path.join(dir2, 'vpc.yaml')
+        
+        for f in [vpc1, api1, api2, vpc2]:
+            with open(f, 'w') as file:
+                file.write(f"test: {os.path.basename(f)}")
+        
+        bulk_sync = BulkParamSync()
+        pairs = bulk_sync.generate_file_pairs(
+            os.path.join(dir1, '*.yaml'),
+            os.path.join(dir2, '*.yaml')
+        )
+        
+        assert len(pairs) == 2
+        # Should match by filename
+        assert (vpc1, vpc2) in pairs
+        assert (api1, api2) in pairs
 
-    @patch('glob.glob')
-    def test_generate_file_pairs_no_source_files(self, mock_glob):
+    def test_generate_file_pairs_no_source_files(self):
         """Test when no source files are found."""
-        mock_glob.return_value = []
+        bulk_sync = BulkParamSync()
+        with patch('builtins.print') as mock_print:
+            pairs = bulk_sync.generate_file_pairs(
+                os.path.join(self.temp_dir, 'missing/*.yaml'),
+                os.path.join(self.temp_dir, 'target/*.yaml')
+            )
+        
+        assert pairs == []
+        assert any('No source files found' in str(call) for call in mock_print.call_args_list)
+
+    def test_generate_file_pairs_no_target_files(self):
+        """Test when no target files are found (non-environment pattern)."""
+        # Create source file but no target
+        source_dir = os.path.join(self.temp_dir, 'source')
+        os.makedirs(source_dir, exist_ok=True)
+        
+        source_file = os.path.join(source_dir, 'file.yaml')
+        with open(source_file, 'w') as f:
+            f.write("test: data")
         
         bulk_sync = BulkParamSync()
         with patch('builtins.print') as mock_print:
-            pairs = bulk_sync.generate_file_pairs('missing/*.yaml', 'target/*.yaml')
+            pairs = bulk_sync.generate_file_pairs(
+                os.path.join(source_dir, '*.yaml'),
+                os.path.join(self.temp_dir, 'target/*.yaml')
+            )
         
         assert pairs == []
-        mock_print.assert_any_call("No source files found matching pattern: missing/*.yaml")
-
-    @patch('glob.glob')
-    def test_generate_file_pairs_no_target_files(self, mock_glob):
-        """Test when no target files are found (non-environment pattern)."""
-        mock_glob.side_effect = [
-            ['source/file.yaml'],  # source files
-            []                     # no target files
-        ]
-        
-        # Mock ParamSync to avoid ruamel.yaml plugin issues
-        with patch('sceptre_sync.bulk_sync.ParamSync'):
-            bulk_sync = BulkParamSync()
-            with patch('builtins.print') as mock_print:
-                pairs = bulk_sync.generate_file_pairs('source/*.yaml', 'target/*.yaml')
-            
-            assert pairs == []
-            mock_print.assert_any_call("No target files found matching pattern: target/*.yaml")
+        assert any('No target files found' in str(call) for call in mock_print.call_args_list)
 
     @patch.object(BulkParamSync, 'generate_file_pairs')
     def test_sync_bulk_no_file_pairs(self, mock_generate_pairs):
