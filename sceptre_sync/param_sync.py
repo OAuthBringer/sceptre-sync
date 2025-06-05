@@ -11,15 +11,13 @@ based on configuration rules, preserving formatting and comments.
 
 import argparse
 import fnmatch
-import os
 import sys
-from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import ruamel.yaml
 from ruamel.yaml.comments import CommentedMap
 
-from .common import calculate_total_changes, format_diff_summary
+from .common import format_diff_summary
 
 
 class ParamSync:
@@ -35,7 +33,7 @@ class ParamSync:
         self.yaml = ruamel.yaml.YAML()
         self.yaml.preserve_quotes = True
         self.yaml.indent(mapping=2, sequence=4, offset=2)
-        
+
         self.config = {}
         if config_file:
             self.load_config(config_file)
@@ -76,7 +74,7 @@ class ParamSync:
             pattern = pattern_config.get('pattern')
             if pattern and fnmatch.fnmatch(file_path, pattern):
                 sync_params.extend(pattern_config.get('sync_params', []))
-        
+
         return sync_params
 
     def get_delete_params(self, file_path: str) -> List[str]:
@@ -98,7 +96,7 @@ class ParamSync:
             if pattern and fnmatch.fnmatch(file_path, pattern):
                 if 'delete_params' in pattern_config:
                     delete_params.extend(pattern_config.get('delete_params', []))
-        
+
         return delete_params
 
     def should_sync_template(self, file_path: str) -> bool:
@@ -118,29 +116,29 @@ class ParamSync:
             pattern = pattern_config.get('pattern')
             if pattern and fnmatch.fnmatch(file_path, pattern):
                 return pattern_config.get('sync_template', False)
-        
+
         return False
 
     def matches_filter(self, data: Dict, filter_spec: str) -> bool:
         """
         Check if the data matches the specified filter.
-        
+
         Filter spec format: "field_path:substring"
         Example: "template.path:enhanced" - checks if data['template']['path'] contains "enhanced"
-        
+
         Args:
             data: The YAML data to check
             filter_spec: The filter specification string
-            
+
         Returns:
             True if the data matches the filter, False otherwise
         """
         if not filter_spec or ':' not in filter_spec:
             return True  # No filter or invalid filter means match everything
-            
+
         field_path, substring = filter_spec.split(':', 1)
         field_parts = field_path.split('.')
-        
+
         # Navigate through the nested structure
         current = data
         for part in field_parts:
@@ -148,12 +146,12 @@ class ParamSync:
                 print(f"Field path '{part}' not found in data")
                 return False
             current = current[part]
-        
+
         # Check if the field value contains the substring
         if isinstance(current, str) and substring in current:
             print(f"Filter match: '{substring}' found in '{current}'")
             return True
-        
+
         print(f"Filter no match: '{substring}' not found in '{current}'")
         return False
 
@@ -188,18 +186,18 @@ class ParamSync:
         except Exception as e:
             print(f"Error saving YAML file {file_path}: {e}", file=sys.stderr)
             sys.exit(1)
-    
+
     def _compare_templates(self, source_template: Dict, target_template: Dict) -> Optional[Dict]:
         """
         Compare source and target templates to determine if they differ.
-        
+
         This method extracts the template comparison logic to reduce nesting
         in the generate_diff method.
-        
+
         Args:
             source_template: Template from source YAML
             target_template: Template from target YAML
-            
+
         Returns:
             Dict with 'old' and 'new' keys if templates differ, None if identical
         """
@@ -223,33 +221,33 @@ class ParamSync:
                 'old': target_template,
                 'new': source_template
             }
-        
+
         return None
-    
-    def _diff_parameters(self, source_params: Dict, target_params: Dict, 
-                        params_to_sync: List[str]) -> Tuple[Dict, Dict, Dict]:
+
+    def _diff_parameters(self, source_params: Dict, target_params: Dict,
+                         params_to_sync: List[str]) -> Tuple[Dict, Dict, Dict]:
         """
         Compare source and target parameters to categorize changes.
-        
+
         This method extracts the parameter diffing logic to reduce complexity
         in the generate_diff method.
-        
+
         Args:
             source_params: Parameters from source YAML
             target_params: Parameters from target YAML
             params_to_sync: List of parameter names to compare
-            
+
         Returns:
             Tuple of (added, modified, unchanged) dictionaries
         """
         added = {}
         modified = {}
         unchanged = {}
-        
+
         for param in params_to_sync:
             if param in source_params:
                 source_value = source_params[param]
-                
+
                 if param not in target_params:
                     added[param] = source_value
                 elif str(source_params[param]) != str(target_params[param]):
@@ -259,11 +257,12 @@ class ParamSync:
                     }
                 else:
                     unchanged[param] = source_value
-        
+
         return added, modified, unchanged
 
-    def generate_diff(self, source_data: Dict, target_data: Dict, params_to_sync: List[str], 
-                     params_to_delete: List[str], sync_template: bool = False) -> Dict:
+    def generate_diff(self, source_data: Dict, target_data: Dict,
+                      params_to_sync: List[str], params_to_delete: List[str],
+                      sync_template: bool = False) -> Dict:
         """
         Generate a diff of changes that would be applied.
 
@@ -280,26 +279,26 @@ class ParamSync:
         # Get parameters from source and target
         source_params = source_data.get('parameters', {})
         target_params = target_data.get('parameters', {})
-        
+
         # Use helper method to diff parameters
         added, modified, unchanged = self._diff_parameters(
             source_params, target_params, params_to_sync
         )
-        
+
         # Check parameters to delete
         deleted = {}
         for param in params_to_delete:
             if param in target_params:
                 deleted[param] = target_params[param]
-        
+
         # Check template if requested
         template_diff = None
         if sync_template and 'template' in source_data and 'template' in target_data:
             template_diff = self._compare_templates(
-                source_data['template'], 
+                source_data['template'],
                 target_data['template']
             )
-        
+
         return {
             'added': added,
             'modified': modified,
@@ -308,7 +307,7 @@ class ParamSync:
             'template': template_diff
         }
 
-    def sync_parameters(self, source_file: str, target_file: str, 
+    def sync_parameters(self, source_file: str, target_file: str,
                         params_to_sync: Optional[List[str]] = None,
                         params_to_delete: Optional[List[str]] = None,
                         dry_run: bool = False,
@@ -332,7 +331,7 @@ class ParamSync:
         # Load source and target files
         source_data = self.load_yaml_file(source_file)
         target_data = self.load_yaml_file(target_file)
-        
+
         # Apply filter if specified
         if filter_spec:
             if not self.matches_filter(source_data, filter_spec):
@@ -340,45 +339,52 @@ class ParamSync:
                 return {}
             else:
                 print(f"Source file {source_file} matches filter {filter_spec}, processing.")
-        
+
         # Determine parameters to sync if not provided
         if params_to_sync is None:
             params_to_sync = self.get_sync_params(source_file)
             if not params_to_sync:
                 print(f"No sync parameters defined for {source_file}", file=sys.stderr)
-                return {'added': {}, 'modified': {}, 'unchanged': {}, 'deleted': {}, 'template': None}
-        
+                return {
+                    'added': {}, 'modified': {}, 'unchanged': {},
+                    'deleted': {}, 'template': None
+                }
+
         # Determine parameters to delete if not provided
         if params_to_delete is None:
             params_to_delete = self.get_delete_params(source_file)
-        
+
         # Determine if template should be synced if not provided
         if sync_template is None:
             sync_template = self.should_sync_template(source_file)
-        
+
         # Generate diff
-        diff = self.generate_diff(source_data, target_data, params_to_sync, params_to_delete, sync_template)
-        
+        diff = self.generate_diff(
+            source_data, target_data, params_to_sync,
+            params_to_delete, sync_template
+        )
+
         # Apply changes if not dry run
         if not dry_run:
             # Apply parameter additions and modifications
-            for param in list(diff['added'].keys()) + list(diff['modified'].keys()):
+            added_and_modified = list(diff['added'].keys()) + list(diff['modified'].keys())
+            for param in added_and_modified:
                 if 'parameters' not in target_data:
                     target_data['parameters'] = {}
                 target_data['parameters'][param] = source_data['parameters'][param]
-            
+
             # Apply parameter deletions
             for param in diff['deleted'].keys():
                 if 'parameters' in target_data and param in target_data['parameters']:
                     del target_data['parameters'][param]
-            
+
             # Apply template change if needed
             if diff['template']:
                 target_data['template'] = source_data['template']
-            
+
             # Save the updated target file
             self.save_yaml_file(target_file, target_data)
-        
+
         return diff
 
     def print_diff(self, diff: Dict) -> None:
@@ -391,32 +397,36 @@ class ParamSync:
         if not diff:
             # Empty diff means file was filtered out
             return
-            
-        if not diff['added'] and not diff['modified'] and not diff['deleted'] and not diff['template']:
+
+        changes_exist = (
+            diff['added'] or diff['modified'] or
+            diff['deleted'] or diff['template']
+        )
+        if not changes_exist:
             print("No changes to apply.")
             return
-        
+
         print("\nChanges to apply:")
-        
+
         if diff['added']:
             print("\n  Parameters to add:")
             for param, value in diff['added'].items():
                 print(f"    + {param}: {value}")
-        
+
         if diff['modified']:
             print("\n  Parameters to modify:")
             for param, values in diff['modified'].items():
                 print(f"    ~ {param}: {values['old']} -> {values['new']}")
-        
+
         if diff['deleted']:
             print("\n  Parameters to delete:")
             for param, value in diff['deleted'].items():
                 print(f"    - {param}: {value}")
-        
+
         if diff['template']:
             print("\n  Template to modify:")
             print(f"    ~ {diff['template']['old']} -> {diff['template']['new']}")
-        
+
         if diff['unchanged']:
             print(f"\n  {len(diff['unchanged'])} parameters already in sync.")
 
@@ -431,21 +441,21 @@ def main():
     parser.add_argument("--config", "-c", help="Configuration file defining sync rules")
     parser.add_argument("--params", "-p", nargs="+", help="Specific parameters to sync")
     parser.add_argument("--delete", "-D", nargs="+", help="Specific parameters to delete")
-    parser.add_argument("--dry-run", "-d", action="store_true", 
+    parser.add_argument("--dry-run", "-d", action="store_true",
                         help="Show changes without applying them")
     parser.add_argument("--sync-template", "-T", action="store_true",
                         help="Sync the template section")
-    parser.add_argument("--filter", "-f", 
+    parser.add_argument("--filter", "-f",
                         help="Filter by field value (format: field.path:substring)")
-    
+
     args = parser.parse_args()
-    
+
     # Initialize ParamSync
     param_sync = ParamSync(args.config)
-    
+
     # Perform sync operation
     diff = param_sync.sync_parameters(
-        args.source, 
+        args.source,
         args.target,
         args.params,
         args.delete,
@@ -453,16 +463,16 @@ def main():
         args.sync_template,
         args.filter
     )
-    
+
     # Print diff
     param_sync.print_diff(diff)
-    
+
     # Print summary
     if diff:  # Only print summary if file wasn't filtered out
         summary = format_diff_summary(diff, args.dry_run)
         if summary:
             print(f"\n{summary}")
-    
+
     return 0
 
 
