@@ -375,6 +375,12 @@ class ParamSync:
         Returns:
             Dict containing added, modified, unchanged, and deleted parameters
         """
+        # Handle None/empty YAML files
+        if source_data is None:
+            source_data = {}
+        if target_data is None:
+            target_data = {}
+            
         # Get data from source and target using the sync_key
         if '.' in sync_key:
             source_params = self._get_nested_value(source_data, sync_key) or {}
@@ -424,6 +430,12 @@ class ParamSync:
         Returns:
             Dict with diffs organized by key
         """
+        # Handle None/empty YAML files
+        if source_data is None:
+            source_data = {}
+        if target_data is None:
+            target_data = {}
+            
         multi_diff = {}
         
         # Process each sync rule
@@ -480,6 +492,14 @@ class ParamSync:
         # Load source and target files
         source_data = self.load_yaml_file(source_file)
         target_data = self.load_yaml_file(target_file)
+        
+        # Check if target file has only comments (loaded as None)
+        # If so, we need to preserve the original content when writing
+        target_was_comments_only = target_data is None
+        if target_was_comments_only:
+            # Read the original file content to preserve comments
+            with open(target_file, 'r') as f:
+                original_target_content = f.read()
 
         # Apply filter if specified
         if filter_spec:
@@ -530,6 +550,10 @@ class ParamSync:
 
         # Apply changes if not dry run
         if not dry_run:
+            # Initialize target_data if it was None/empty
+            if target_data is None:
+                target_data = {}
+                
             if sync_rules:
                 # Multi-key apply
                 for key_name, key_diff in diff.items():
@@ -616,7 +640,22 @@ class ParamSync:
                     target_data['template'] = source_data['template']
 
             # Save the updated target file
-            self.save_yaml_file(target_file, target_data)
+            if target_was_comments_only and target_data:
+                # Special handling for files that were comments-only
+                # We need to append the new data while preserving comments
+                with open(target_file, 'w') as f:
+                    # Write original comments
+                    f.write(original_target_content.rstrip())
+                    if original_target_content and not original_target_content.endswith('\n'):
+                        f.write('\n')
+                    # Append the new data
+                    from io import StringIO
+                    stream = StringIO()
+                    self.yaml.dump(target_data, stream)
+                    f.write(stream.getvalue())
+            else:
+                # Normal save for files that had data structure
+                self.save_yaml_file(target_file, target_data)
 
         return diff
 
