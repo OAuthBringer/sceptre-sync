@@ -176,8 +176,15 @@ class ParamSync:
         """
         Check if the data matches the specified filter.
 
-        Filter spec format: "field_path:substring"
-        Example: "template.path:enhanced" - checks if data['template']['path'] contains "enhanced"
+        Filter spec format: 
+        - Inclusion: "field_path:substring" - checks if field contains substring
+        - Exclusion: "field_path:!substring" - checks if field does NOT contain substring
+        - Multiple filters: "field1:value1,field2:!value2" - ALL must match (AND logic)
+        
+        Examples:
+        - "template.path:enhanced" - include files with 'enhanced' in template path
+        - "template.path:!enhanced" - exclude files with 'enhanced' in template path
+        - "environment:prod,template.type:!test" - prod environment but not test templates
 
         Args:
             data: The YAML data to check
@@ -186,27 +193,61 @@ class ParamSync:
         Returns:
             True if the data matches the filter, False otherwise
         """
-        if not filter_spec or ':' not in filter_spec:
-            return True  # No filter or invalid filter means match everything
-
-        field_path, substring = filter_spec.split(':', 1)
-        field_parts = field_path.split('.')
-
-        # Navigate through the nested structure
-        current = data
-        for part in field_parts:
-            if not isinstance(current, dict) or part not in current:
-                print(f"Field path '{part}' not found in data")
-                return False
-            current = current[part]
-
-        # Check if the field value contains the substring
-        if isinstance(current, str) and substring in current:
-            print(f"Filter match: '{substring}' found in '{current}'")
-            return True
-
-        print(f"Filter no match: '{substring}' not found in '{current}'")
-        return False
+        if not filter_spec:
+            return True  # No filter means match everything
+            
+        # Split multiple filters by comma (AND logic)
+        filters = filter_spec.split(',')
+        
+        for single_filter in filters:
+            single_filter = single_filter.strip()
+            if ':' not in single_filter:
+                continue  # Skip invalid filters
+                
+            field_path, value_spec = single_filter.split(':', 1)
+            
+            # Check if this is an exclusion filter
+            is_exclusion = value_spec.startswith('!')
+            if is_exclusion:
+                value_spec = value_spec[1:]  # Remove the ! prefix
+            
+            # Navigate through the nested structure
+            field_parts = field_path.split('.')
+            current = data
+            field_exists = True
+            
+            for part in field_parts:
+                if not isinstance(current, dict) or part not in current:
+                    field_exists = False
+                    break
+                current = current[part]
+            
+            # Apply filter logic
+            if is_exclusion:
+                # Exclusion filter
+                if field_exists and isinstance(current, str):
+                    # Field exists - check it doesn't contain the value
+                    # Special case: empty exclusion value means exclude empty strings only
+                    if not value_spec:
+                        # Exclude only if the field is empty
+                        if current == '':
+                            print(f"Exclusion filter failed: field is empty")
+                            return False
+                    elif value_spec in current:
+                        print(f"Exclusion filter failed: '{value_spec}' found in '{current}'")
+                        return False
+                # Field doesn't exist or doesn't contain value - passes exclusion
+            else:
+                # Inclusion filter
+                if not field_exists:
+                    print(f"Field path '{field_path}' not found in data")
+                    return False
+                if not isinstance(current, str) or value_spec not in current:
+                    print(f"Filter no match: '{value_spec}' not found in '{current}'")
+                    return False
+                print(f"Filter match: '{value_spec}' found in '{current}'")
+        
+        return True  # All filters passed
 
     def load_yaml_file(self, file_path: str) -> CommentedMap:
         """
