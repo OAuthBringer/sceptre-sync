@@ -119,6 +119,26 @@ class ParamSync:
 
         return False
 
+    def get_sync_key(self, file_path: str) -> str:
+        """
+        Get the sync key for a file based on configuration patterns.
+
+        Args:
+            file_path: Path to the file to match against patterns
+
+        Returns:
+            The sync key to use (defaults to 'parameters')
+        """
+        if not self.config or 'template_patterns' not in self.config:
+            return 'parameters'
+
+        for pattern_config in self.config['template_patterns']:
+            pattern = pattern_config.get('pattern')
+            if pattern and fnmatch.fnmatch(file_path, pattern):
+                return pattern_config.get('sync_key', 'parameters')
+
+        return 'parameters'
+
     def matches_filter(self, data: Dict, filter_spec: str) -> bool:
         """
         Check if the data matches the specified filter.
@@ -224,6 +244,51 @@ class ParamSync:
 
         return None
 
+    def _get_nested_value(self, data: Dict, key_path: str) -> Optional[Dict]:
+        """
+        Get a nested value from data using dot notation.
+
+        Args:
+            data: The data dictionary
+            key_path: Path to the value (e.g., "stack_tags.nested")
+
+        Returns:
+            The value at the specified path, or None if not found
+        """
+        parts = key_path.split('.')
+        current = data
+        
+        for part in parts[:-1]:
+            if not isinstance(current, dict) or part not in current:
+                return None
+            current = current[part]
+        
+        # Return the final part if it exists
+        if isinstance(current, dict) and parts[-1] in current:
+            return current[parts[-1]]
+        return None
+
+    def _set_nested_value(self, data: Dict, key_path: str, value: Dict) -> None:
+        """
+        Set a nested value in data using dot notation.
+
+        Args:
+            data: The data dictionary to modify
+            key_path: Path to set (e.g., "stack_tags.nested")
+            value: The value to set
+        """
+        parts = key_path.split('.')
+        current = data
+        
+        # Create nested structure if needed
+        for part in parts[:-1]:
+            if part not in current:
+                current[part] = {}
+            current = current[part]
+        
+        # Set the final value
+        current[parts[-1]] = value
+
     def _diff_parameters(self, source_params: Dict, target_params: Dict,
                          params_to_sync: List[str]) -> Tuple[Dict, Dict, Dict]:
         """
@@ -262,7 +327,7 @@ class ParamSync:
 
     def generate_diff(self, source_data: Dict, target_data: Dict,
                       params_to_sync: List[str], params_to_delete: List[str],
-                      sync_template: bool = False) -> Dict:
+                      sync_template: bool = False, sync_key: str = 'parameters') -> Dict:
         """
         Generate a diff of changes that would be applied.
 
@@ -272,13 +337,18 @@ class ParamSync:
             params_to_sync: List of parameters to synchronize
             params_to_delete: List of parameters to delete
             sync_template: Whether to sync the template section
+            sync_key: The key to synchronize (defaults to 'parameters')
 
         Returns:
             Dict containing added, modified, unchanged, and deleted parameters
         """
-        # Get parameters from source and target
-        source_params = source_data.get('parameters', {})
-        target_params = target_data.get('parameters', {})
+        # Get data from source and target using the sync_key
+        if '.' in sync_key:
+            source_params = self._get_nested_value(source_data, sync_key) or {}
+            target_params = self._get_nested_value(target_data, sync_key) or {}
+        else:
+            source_params = source_data.get(sync_key, {})
+            target_params = target_data.get(sync_key, {})
 
         # Use helper method to diff parameters
         added, modified, unchanged = self._diff_parameters(
@@ -312,7 +382,8 @@ class ParamSync:
                         params_to_delete: Optional[List[str]] = None,
                         dry_run: bool = False,
                         sync_template: Optional[bool] = None,
-                        filter_spec: Optional[str] = None) -> Dict:
+                        filter_spec: Optional[str] = None,
+                        sync_key: str = 'parameters') -> Dict:
         """
         Synchronize parameters from source file to target file.
 
@@ -324,6 +395,7 @@ class ParamSync:
             dry_run: If True, only show changes without applying them
             sync_template: Whether to sync the template section (if None, determined from config)
             filter_spec: Filter specification to apply (field_path:substring)
+            sync_key: The key to synchronize (defaults to 'parameters')
 
         Returns:
             Dict containing the diff of changes
@@ -361,22 +433,46 @@ class ParamSync:
         # Generate diff
         diff = self.generate_diff(
             source_data, target_data, params_to_sync,
-            params_to_delete, sync_template
+            params_to_delete, sync_template, sync_key
         )
 
         # Apply changes if not dry run
         if not dry_run:
+            # Get source values
+            if '.' in sync_key:
+                source_values = self._get_nested_value(source_data, sync_key) or {}
+            else:
+                source_values = source_data.get(sync_key, {})
+
             # Apply parameter additions and modifications
             added_and_modified = list(diff['added'].keys()) + list(diff['modified'].keys())
             for param in added_and_modified:
-                if 'parameters' not in target_data:
-                    target_data['parameters'] = {}
-                target_data['parameters'][param] = source_data['parameters'][param]
+                # Create the sync_key structure if it doesn't exist
+                if '.' in sync_key:
+                    # Get or create the nested structure
+                    parts = sync_key.split('.')
+                    current = target_data
+                    for part in parts[:-1]:
+                        if part not in current:
+                            current[part] = {}
+                        current = current[part]
+                    if parts[-1] not in current:
+                        current[parts[-1]] = {}
+                    current[parts[-1]][param] = source_values[param]
+                else:
+                    if sync_key not in target_data:
+                        target_data[sync_key] = {}
+                    target_data[sync_key][param] = source_values[param]
 
             # Apply parameter deletions
             for param in diff['deleted'].keys():
-                if 'parameters' in target_data and param in target_data['parameters']:
-                    del target_data['parameters'][param]
+                if '.' in sync_key:
+                    target_values = self._get_nested_value(target_data, sync_key)
+                    if target_values and param in target_values:
+                        del target_values[param]
+                else:
+                    if sync_key in target_data and param in target_data[sync_key]:
+                        del target_data[sync_key][param]
 
             # Apply template change if needed
             if diff['template']:
@@ -447,6 +543,8 @@ def main():
                         help="Sync the template section")
     parser.add_argument("--filter", "-f",
                         help="Filter by field value (format: field.path:substring)")
+    parser.add_argument("--sync-key", "-k",
+                        help="Key to synchronize (default: parameters)")
 
     args = parser.parse_args()
 
@@ -461,7 +559,8 @@ def main():
         args.delete,
         args.dry_run,
         args.sync_template,
-        args.filter
+        args.filter,
+        sync_key=args.sync_key if args.sync_key else 'parameters'
     )
 
     # Print diff
