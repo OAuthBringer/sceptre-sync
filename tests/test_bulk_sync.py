@@ -1,508 +1,399 @@
 """
-Test for bulk_sync module.
+Test for bulk sync functionality with all new features.
 
-Testing bulk operations because if you're going to make mistakes,
-why not make them at scale? Like deploying to production on Friday,
-but for configuration files.
+Because testing one file at a time is like eating soup with a fork -
+technically possible but missing the entire point.
 """
 
-import pytest
-from unittest.mock import Mock, patch, call
 import os
+import pytest
 from pathlib import Path
+import tempfile
 
-from sceptre_sync.bulk_sync import BulkParamSync, main
+import ruamel.yaml
+from sceptre_sync.bulk_sync import BulkParamSync
 
 
-class TestBulkParamSync:
-    """Test the BulkParamSync class functionality."""
-
-    def test_init_with_config(self, config_file):
-        """Test BulkParamSync initialization with config."""
-        bulk_sync = BulkParamSync(config_file)
-        assert bulk_sync.param_sync is not None
-        assert bulk_sync.param_sync.config is not None
-        assert 'template_patterns' in bulk_sync.param_sync.config
-
-    def test_init_without_config(self):
-        """Test BulkParamSync initialization without config."""
-        bulk_sync = BulkParamSync()
-        assert bulk_sync.param_sync is not None
-        assert bulk_sync.param_sync.config == {}
-
-    def test_find_matching_files(self, temp_dir):
-        """Test finding files with glob patterns."""
-        # Create real test files
-        config_dir = os.path.join(temp_dir, 'config', 'di-alpha')
-        api_dir = os.path.join(config_dir, 'api')
-        os.makedirs(api_dir, exist_ok=True)
+class TestBulkSync:
+    """Test bulk synchronization with multi-key support and static values."""
+    
+    def test_bulk_sync_with_multi_key_rules(self, temp_dir):
+        """Test bulk sync using multi-key sync rules."""
+        # Create directory structure
+        dev_dir = os.path.join(temp_dir, "configs/dev")
+        prod_dir = os.path.join(temp_dir, "configs/prod")
+        os.makedirs(dev_dir, exist_ok=True)
+        os.makedirs(prod_dir, exist_ok=True)
         
-        # Create test files
-        vpc_file = os.path.join(config_dir, 'vpc.yaml')
-        api_file = os.path.join(api_dir, 'tasks.yaml')
+        # Config with multi-key rules
+        config_content = """
+template_patterns:
+  - pattern: "**/app-*.yaml"
+    sync_rules:
+      - key: parameters
+        sync_params:
+          - VpcCidr
+          - InstanceType
+      - key: stack_tags
+        sync_params:
+          - Application
+          - Owner
+"""
         
-        with open(vpc_file, 'w') as f:
-            f.write("test: vpc")
-        with open(api_file, 'w') as f:
-            f.write("test: api")
-        
-        bulk_sync = BulkParamSync()
-        files = bulk_sync.find_matching_files(os.path.join(temp_dir, 'config/di-alpha/**/*.yaml'))
-        
-        assert len(files) == 2
-        assert vpc_file in files
-        assert api_file in files
-
-    def test_find_matching_files_no_matches(self, temp_dir):
-        """Test finding files when no matches exist."""
-        bulk_sync = BulkParamSync()
-        files = bulk_sync.find_matching_files(os.path.join(temp_dir, 'config/nonexistent/*.yaml'))
-        
-        assert files == []
-
-    def test_generate_file_pairs_with_environments(self, temp_dir, environment_files):
-        """Test generating file pairs between environments."""
-        bulk_sync = BulkParamSync()
-        pairs = bulk_sync.generate_file_pairs(
-            os.path.join(temp_dir, 'config/di-alpha/**/*.yaml'),
-            os.path.join(temp_dir, 'config/di-dev/**/*.yaml')
-        )
-        
-        assert len(pairs) == 2
-        assert (environment_files['alpha_vpc'], environment_files['dev_vpc']) in pairs
-        assert (environment_files['alpha_api'], environment_files['dev_api']) in pairs
-        # database.yaml should not be in pairs as it doesn't exist in dev
-
-    def test_generate_file_pairs_single_files(self, temp_dir):
-        """Test generating pairs when single source and target files."""
-        # Create real files
-        source_dir = os.path.join(temp_dir, 'source')
-        target_dir = os.path.join(temp_dir, 'target')
-        os.makedirs(source_dir, exist_ok=True)
-        os.makedirs(target_dir, exist_ok=True)
-        
-        source_file = os.path.join(source_dir, 'file.yaml')
-        target_file = os.path.join(target_dir, 'file.yaml')
-        
-        with open(source_file, 'w') as f:
-            f.write("source: data")
-        with open(target_file, 'w') as f:
-            f.write("target: data")
-        
-        bulk_sync = BulkParamSync()
-        pairs = bulk_sync.generate_file_pairs(
-            os.path.join(source_dir, 'file.yaml'),
-            os.path.join(target_dir, 'file.yaml')
-        )
-        
-        assert len(pairs) == 1
-        assert pairs[0] == (source_file, target_file)
-
-    def test_generate_file_pairs_by_filename(self, temp_dir):
-        """Test matching files by filename when no environment pattern."""
-        # Create real directory structure
-        dir1 = os.path.join(temp_dir, 'dir1')
-        dir2 = os.path.join(temp_dir, 'dir2')
-        os.makedirs(dir1, exist_ok=True)
-        os.makedirs(dir2, exist_ok=True)
-        
-        # Create files in different order to test filename matching
-        vpc1 = os.path.join(dir1, 'vpc.yaml')
-        api1 = os.path.join(dir1, 'api.yaml')
-        api2 = os.path.join(dir2, 'api.yaml')
-        vpc2 = os.path.join(dir2, 'vpc.yaml')
-        
-        for f in [vpc1, api1, api2, vpc2]:
-            with open(f, 'w') as file:
-                file.write(f"test: {os.path.basename(f)}")
-        
-        bulk_sync = BulkParamSync()
-        pairs = bulk_sync.generate_file_pairs(
-            os.path.join(dir1, '*.yaml'),
-            os.path.join(dir2, '*.yaml')
-        )
-        
-        assert len(pairs) == 2
-        # Should match by filename
-        assert (vpc1, vpc2) in pairs
-        assert (api1, api2) in pairs
-
-    def test_generate_file_pairs_no_source_files(self, temp_dir):
-        """Test when no source files are found."""
-        bulk_sync = BulkParamSync()
-        with patch('builtins.print') as mock_print:
-            pairs = bulk_sync.generate_file_pairs(
-                os.path.join(temp_dir, 'missing/*.yaml'),
-                os.path.join(temp_dir, 'target/*.yaml')
-            )
-        
-        assert pairs == []
-        assert any('No source files found' in str(call) for call in mock_print.call_args_list)
-
-    def test_generate_file_pairs_no_target_files(self, temp_dir):
-        """Test when no target files are found (non-environment pattern)."""
-        # Create source file but no target
-        source_dir = os.path.join(temp_dir, 'source')
-        os.makedirs(source_dir, exist_ok=True)
-        
-        source_file = os.path.join(source_dir, 'file.yaml')
-        with open(source_file, 'w') as f:
-            f.write("test: data")
-        
-        bulk_sync = BulkParamSync()
-        with patch('builtins.print') as mock_print:
-            pairs = bulk_sync.generate_file_pairs(
-                os.path.join(source_dir, '*.yaml'),
-                os.path.join(temp_dir, 'target/*.yaml')
-            )
-        
-        assert pairs == []
-        assert any('No target files found' in str(call) for call in mock_print.call_args_list)
-
-    def test_sync_bulk_no_file_pairs(self, temp_dir):
-        """Test sync_bulk when no file pairs are found."""
-        # Use patterns that won't match any files
-        bulk_sync = BulkParamSync()
-        with patch('builtins.print'):  # Suppress output
-            summary = bulk_sync.sync_bulk(
-                os.path.join(temp_dir, 'nonexistent/*.yaml'),
-                os.path.join(temp_dir, 'also-nonexistent/*.yaml')
-            )
-        
-        assert summary['total_files'] == 0
-        assert summary['changed_files'] == 0
-        assert summary['total_changes'] == 0
-
-    def test_sync_bulk_with_real_files(self, temp_dir, config_file):
-        """Test sync_bulk with actual files."""
-        # Create test directory structure
-        source_dir = os.path.join(temp_dir, 'config', 'di-alpha')
-        target_dir = os.path.join(temp_dir, 'config', 'di-dev')
-        os.makedirs(source_dir, exist_ok=True)
-        os.makedirs(target_dir, exist_ok=True)
-        
-        # Create source file
-        source_file = os.path.join(source_dir, 'vpc.yaml')
-        with open(source_file, 'w') as f:
-            f.write("""
-template:
-  path: templates/vpc.yaml
+        # Create multiple dev files
+        for i in range(1, 4):
+            dev_content = f"""
+template: app-{i}.yaml
 parameters:
-  VpcCidr: "10.0.0.0/16"
-  PublicSubnetCidr: "10.0.1.0/24"
-  PrivateSubnetCidr: "10.0.2.0/24"
-""")
-        
-        # Create target file with different values
-        target_file = os.path.join(target_dir, 'vpc.yaml')
-        with open(target_file, 'w') as f:
-            f.write("""
-template:
-  path: templates/vpc.yaml
+  VpcCidr: 10.{i}.0.0/16
+  InstanceType: t3.large
+  DevOnlyParam: ignore-me
+stack_tags:
+  Application: app-{i}
+  Owner: platform-team
+  Environment: development
+"""
+            
+            prod_content = f"""
+template: app-{i}.yaml
 parameters:
-  VpcCidr: "10.1.0.0/16"
-  PublicSubnetCidr: "10.1.1.0/24"
-  PrivateSubnetCidr: "10.1.2.0/24"
-""")
+  VpcCidr: 172.{i}.0.0/16
+  InstanceType: t2.micro
+  ProdOnlyParam: keep-me
+stack_tags:
+  Application: old-app-{i}
+  Owner: ops-team
+  Environment: production
+"""
+            
+            with open(os.path.join(dev_dir, f"app-{i}.yaml"), 'w') as f:
+                f.write(dev_content)
+            with open(os.path.join(prod_dir, f"app-{i}.yaml"), 'w') as f:
+                f.write(prod_content)
         
-        # Create bulk sync with config
+        config_file = os.path.join(temp_dir, "config.yaml")
+        with open(config_file, 'w') as f:
+            f.write(config_content)
+        
+        # Run bulk sync
         bulk_sync = BulkParamSync(config_file)
+        summary = bulk_sync.sync_bulk(
+            os.path.join(dev_dir, "app-*.yaml"),
+            os.path.join(prod_dir, "app-*.yaml"),
+            dry_run=False,
+            interactive=False,
+            yes_to_all=True
+        )
         
-        # Test dry run
-        with patch('builtins.print') as mock_print:
-            summary = bulk_sync.sync_bulk(
-                os.path.join(temp_dir, 'config/di-alpha/*.yaml'),
-                os.path.join(temp_dir, 'config/di-dev/*.yaml'),
-                dry_run=True
-            )
+        # Verify summary
+        assert summary['total_files'] == 3
+        assert summary['changed_files'] == 3
+        assert summary['total_changes'] > 0
         
-        assert summary['total_files'] == 1
-        assert summary['changed_files'] == 0  # dry run
-        assert summary['total_changes'] == 0  # dry run
+        # Verify each file was updated correctly
+        yaml = ruamel.yaml.YAML()
+        for i in range(1, 4):
+            with open(os.path.join(prod_dir, f"app-{i}.yaml"), 'r') as f:
+                result = yaml.load(f)
+            
+            # Parameters synced from dev
+            assert result['parameters']['VpcCidr'] == f"10.{i}.0.0/16"
+            assert result['parameters']['InstanceType'] == "t3.large"
+            # Prod-only params preserved
+            assert result['parameters']['ProdOnlyParam'] == "keep-me"
+            # Dev-only params not copied
+            assert 'DevOnlyParam' not in result['parameters']
+            
+            # Stack tags synced
+            assert result['stack_tags']['Application'] == f"app-{i}"
+            assert result['stack_tags']['Owner'] == "platform-team"
+            # Environment not in sync list, so unchanged
+            assert result['stack_tags']['Environment'] == "production"
+    
+    def test_bulk_sync_with_static_values(self, temp_dir):
+        """Test bulk sync with static values injection."""
+        # Create directory structure
+        src_dir = os.path.join(temp_dir, "source")
+        tgt_dir = os.path.join(temp_dir, "target")
+        os.makedirs(src_dir, exist_ok=True)
+        os.makedirs(tgt_dir, exist_ok=True)
         
-        # Verify output
-        print_calls = [str(call) for call in mock_print.call_args_list]
-        assert any('VpcCidr' in str(call) for call in print_calls)
-        assert any('10.0.0.0/16' in str(call) for call in print_calls)
-
-    @patch('builtins.input', return_value='y')
-    def test_sync_bulk_interactive_yes(self, mock_input, source_target_files, config_file):
-        """Test bulk sync with interactive confirmation (user says yes)."""
-        source_file, target_file = source_target_files
-        source_dir = os.path.dirname(source_file)
-        target_dir = os.path.dirname(target_file)
+        # Config with static values
+        config_content = """
+template_patterns:
+  - pattern: "**/svc-*.yaml"
+    sync_rules:
+      - key: parameters
+        sync_params:
+          - ServiceName
+        static_values:
+          Environment: production
+          ManagedBy: sceptre
+          Region: us-east-1
+      - key: metadata
+        static_values:
+          version: "1.0.0"
+          last_updated: "2023-12-01"
+"""
         
+        # Create source files with minimal content
+        for svc in ['api', 'web', 'worker']:
+            src_content = f"""
+template: service.yaml
+parameters:
+  ServiceName: {svc}-service
+"""
+            
+            tgt_content = f"""
+template: service.yaml
+parameters:
+  ServiceName: old-{svc}
+  Environment: staging
+  LocalParam: keep-me
+"""
+            
+            with open(os.path.join(src_dir, f"svc-{svc}.yaml"), 'w') as f:
+                f.write(src_content)
+            with open(os.path.join(tgt_dir, f"svc-{svc}.yaml"), 'w') as f:
+                f.write(tgt_content)
+        
+        config_file = os.path.join(temp_dir, "config.yaml")
+        with open(config_file, 'w') as f:
+            f.write(config_content)
+        
+        # Run bulk sync
         bulk_sync = BulkParamSync(config_file)
+        summary = bulk_sync.sync_bulk(
+            os.path.join(src_dir, "svc-*.yaml"),
+            os.path.join(tgt_dir, "svc-*.yaml"),
+            dry_run=False,
+            interactive=False,
+            yes_to_all=True
+        )
         
-        with patch('builtins.print'):  # Suppress output
-            summary = bulk_sync.sync_bulk(
-                os.path.join(source_dir, '*.yaml'),
-                os.path.join(target_dir, '*.yaml'),
-                dry_run=False,
-                interactive=True
-            )
+        # Verify all files processed
+        assert summary['total_files'] == 3
+        assert summary['changed_files'] == 3
         
-        # Verify the file was actually changed
-        with open(target_file, 'r') as f:
-            content = f.read()
-            assert '10.0.0.0/16' in content
+        # Verify static values were injected
+        yaml = ruamel.yaml.YAML()
+        for svc in ['api', 'web', 'worker']:
+            with open(os.path.join(tgt_dir, f"svc-{svc}.yaml"), 'r') as f:
+                result = yaml.load(f)
+            
+            # Synced from source
+            assert result['parameters']['ServiceName'] == f"{svc}-service"
+            # Static values injected/overridden
+            assert result['parameters']['Environment'] == "production"
+            assert result['parameters']['ManagedBy'] == "sceptre"
+            assert result['parameters']['Region'] == "us-east-1"
+            # Local params preserved
+            assert result['parameters']['LocalParam'] == "keep-me"
+            
+            # Metadata added (didn't exist before)
+            assert result['metadata']['version'] == "1.0.0"
+            assert result['metadata']['last_updated'] == "2023-12-01"
+    
+    def test_bulk_sync_backward_compatibility(self, temp_dir):
+        """Test bulk sync still works with old-style configs."""
+        # Create directories
+        dev_dir = os.path.join(temp_dir, "dev")
+        prod_dir = os.path.join(temp_dir, "prod")
+        os.makedirs(dev_dir, exist_ok=True)
+        os.makedirs(prod_dir, exist_ok=True)
         
+        # Old-style config
+        config_content = """
+template_patterns:
+  - pattern: "**/legacy.yaml"
+    sync_params:
+      - VpcCidr
+      - SubnetCidr
+    delete_params:
+      - OldParam
+"""
+        
+        # Create files
+        dev_content = """
+template: vpc.yaml
+parameters:
+  VpcCidr: 10.0.0.0/16
+  SubnetCidr: 10.0.1.0/24
+  DevParam: ignore
+"""
+        
+        prod_content = """
+template: vpc.yaml
+parameters:
+  VpcCidr: 172.16.0.0/16
+  SubnetCidr: 172.16.1.0/24
+  OldParam: delete-me
+  ProdParam: keep
+"""
+        
+        with open(os.path.join(dev_dir, "legacy.yaml"), 'w') as f:
+            f.write(dev_content)
+        with open(os.path.join(prod_dir, "legacy.yaml"), 'w') as f:
+            f.write(prod_content)
+        
+        config_file = os.path.join(temp_dir, "config.yaml")
+        with open(config_file, 'w') as f:
+            f.write(config_content)
+        
+        # Run bulk sync
+        bulk_sync = BulkParamSync(config_file)
+        summary = bulk_sync.sync_bulk(
+            os.path.join(dev_dir, "legacy.yaml"),
+            os.path.join(prod_dir, "legacy.yaml"),
+            dry_run=False,
+            interactive=False,
+            yes_to_all=True
+        )
+        
+        # Verify it worked
         assert summary['total_files'] == 1
         assert summary['changed_files'] == 1
-        assert summary['total_changes'] == 1
-        mock_input.assert_called_once()
-
-    @patch('builtins.input', return_value='n')
-    def test_sync_bulk_interactive_no(self, mock_input, source_target_files, config_file):
-        """Test bulk sync when user declines changes."""
-        source_file, target_file = source_target_files
-        source_dir = os.path.dirname(source_file)
-        target_dir = os.path.dirname(target_file)
         
-        bulk_sync = BulkParamSync(config_file)
+        yaml = ruamel.yaml.YAML()
+        with open(os.path.join(prod_dir, "legacy.yaml"), 'r') as f:
+            result = yaml.load(f)
         
-        with patch('builtins.print'):  # Suppress output
-            summary = bulk_sync.sync_bulk(
-                os.path.join(source_dir, '*.yaml'),
-                os.path.join(target_dir, '*.yaml'),
-                dry_run=False,
-                interactive=True
-            )
+        # Old-style sync worked
+        assert result['parameters']['VpcCidr'] == "10.0.0.0/16"
+        assert result['parameters']['SubnetCidr'] == "10.0.1.0/24"
+        assert 'OldParam' not in result['parameters']
+        assert result['parameters']['ProdParam'] == "keep"
+    
+    def test_bulk_sync_with_filter(self, temp_dir):
+        """Test bulk sync with filter spec."""
+        # Create directories
+        src_dir = os.path.join(temp_dir, "src")
+        tgt_dir = os.path.join(temp_dir, "tgt")
+        os.makedirs(src_dir, exist_ok=True)
+        os.makedirs(tgt_dir, exist_ok=True)
         
-        # Verify the file was NOT changed
-        with open(target_file, 'r') as f:
-            content = f.read()
-            assert '10.1.0.0/16' in content  # Still has original value
+        config_content = """
+template_patterns:
+  - pattern: "**/*.yaml"
+    sync_params:
+      - VpcCidr
+"""
         
-        assert summary['total_files'] == 1
-        assert summary['changed_files'] == 0
-        assert summary['total_changes'] == 0
-
-    def test_sync_bulk_yes_to_all(self, temp_dir, config_file):
-        """Test bulk sync with yes_to_all flag."""
-        # Create multiple test files
-        source_dir = os.path.join(temp_dir, 'source')
-        target_dir = os.path.join(temp_dir, 'target')
-        os.makedirs(source_dir, exist_ok=True)
-        os.makedirs(target_dir, exist_ok=True)
-        
-        # Create two pairs of files
-        for i in range(2):
-            source_file = os.path.join(source_dir, f'test{i}.yaml')
-            target_file = os.path.join(target_dir, f'test{i}.yaml')
+        # Create files with different templates
+        for i, template_type in enumerate(['standard', 'enhanced', 'basic']):
+            src_content = f"""
+template:
+  type: {template_type}
+  path: templates/{template_type}.yaml
+parameters:
+  VpcCidr: 10.{i}.0.0/16
+"""
             
-            with open(source_file, 'w') as f:
-                f.write(f"parameters:\n  VpcCidr: '10.{i}.0.0/16'\n")
+            tgt_content = f"""
+template:
+  type: {template_type}
+  path: templates/{template_type}.yaml
+parameters:
+  VpcCidr: 172.{i}.0.0/16
+"""
             
-            with open(target_file, 'w') as f:
-                f.write("parameters:\n  VpcCidr: '192.168.0.0/16'\n")
+            with open(os.path.join(src_dir, f"stack-{i}.yaml"), 'w') as f:
+                f.write(src_content)
+            with open(os.path.join(tgt_dir, f"stack-{i}.yaml"), 'w') as f:
+                f.write(tgt_content)
         
+        config_file = os.path.join(temp_dir, "config.yaml")
+        with open(config_file, 'w') as f:
+            f.write(config_content)
+        
+        # Run bulk sync with filter - only process 'enhanced' templates
         bulk_sync = BulkParamSync(config_file)
+        summary = bulk_sync.sync_bulk(
+            os.path.join(src_dir, "*.yaml"),
+            os.path.join(tgt_dir, "*.yaml"),
+            dry_run=False,
+            interactive=False,
+            yes_to_all=True,
+            filter_spec="template.path:enhanced"
+        )
         
-        with patch('builtins.print'):  # Suppress output
-            with patch('builtins.input') as mock_input:
-                summary = bulk_sync.sync_bulk(
-                    os.path.join(source_dir, '*.yaml'),
-                    os.path.join(target_dir, '*.yaml'),
-                    dry_run=False,
-                    yes_to_all=True
-                )
+        # Only 1 file should match the filter
+        assert summary['total_files'] == 3
+        assert summary['filtered_files'] == 2
+        assert summary['changed_files'] == 1
         
-        # Should not prompt when yes_to_all is True
-        mock_input.assert_not_called()
+        yaml = ruamel.yaml.YAML()
+        # Check enhanced was updated
+        with open(os.path.join(tgt_dir, "stack-1.yaml"), 'r') as f:
+            result = yaml.load(f)
+        assert result['parameters']['VpcCidr'] == "10.1.0.0/16"
         
-        # Verify both files were changed
-        for i in range(2):
-            target_file = os.path.join(target_dir, f'test{i}.yaml')
-            with open(target_file, 'r') as f:
-                content = f.read()
-                assert f'10.{i}.0.0/16' in content
+        # Check others were not updated
+        with open(os.path.join(tgt_dir, "stack-0.yaml"), 'r') as f:
+            result = yaml.load(f)
+        assert result['parameters']['VpcCidr'] == "172.0.0.0/16"  # Unchanged
+    
+    def test_bulk_sync_environment_mapping(self, temp_dir):
+        """Test the special environment directory mapping feature."""
+        # Create Sceptre-style environment directories
+        dev_dir = os.path.join(temp_dir, "config/di-development")
+        prod_dir = os.path.join(temp_dir, "config/di-production")
+        os.makedirs(dev_dir, exist_ok=True)
+        os.makedirs(prod_dir, exist_ok=True)
         
-        assert summary['changed_files'] == 2
-        assert summary['total_changes'] == 2
-
-    def test_sync_bulk_with_filter(self, temp_dir, simple_config_file):
-        """Test bulk sync with filter specification."""
-        # Create test files
-        source_dir = os.path.join(temp_dir, 'source')
-        target_dir = os.path.join(temp_dir, 'target')
-        os.makedirs(source_dir, exist_ok=True)
-        os.makedirs(target_dir, exist_ok=True)
+        config_content = """
+template_patterns:
+  - pattern: "**/*.yaml"
+    sync_rules:
+      - key: parameters
+        sync_params: [InstanceType]
+        static_values:
+          Environment: production
+"""
         
-        # Create VPC file (should match filter)
-        vpc_source = os.path.join(source_dir, 'vpc.yaml')
-        vpc_target = os.path.join(target_dir, 'vpc.yaml')
-        with open(vpc_source, 'w') as f:
-            f.write("""
-template:
-  path: templates/vpc.yaml
-  type: vpc
+        # Create matching files in dev
+        for stack in ['vpc', 'app', 'db']:
+            content = f"""
 parameters:
-  VpcCidr: "10.0.0.0/16"
-""")
-        with open(vpc_target, 'w') as f:
-            f.write("""
-template:
-  path: templates/vpc.yaml
-  type: vpc
+  InstanceType: t3.large
+  StackName: {stack}
+"""
+            with open(os.path.join(dev_dir, f"{stack}.yaml"), 'w') as f:
+                f.write(content)
+            
+            # Only create vpc and app in prod (db will be skipped)
+            if stack != 'db':
+                prod_content = f"""
 parameters:
-  VpcCidr: "10.1.0.0/16"
-""")
+  InstanceType: t2.micro
+  StackName: {stack}
+  Environment: staging
+"""
+                with open(os.path.join(prod_dir, f"{stack}.yaml"), 'w') as f:
+                    f.write(prod_content)
         
-        # Create API file (should NOT match filter)
-        api_source = os.path.join(source_dir, 'api.yaml')
-        api_target = os.path.join(target_dir, 'api.yaml')
-        with open(api_source, 'w') as f:
-            f.write("""
-template:
-  path: templates/api.yaml
-  type: api
-parameters:
-  CPUReservation: 256
-""")
-        with open(api_target, 'w') as f:
-            f.write("""
-template:
-  path: templates/api.yaml
-  type: api
-parameters:
-  CPUReservation: 512
-""")
+        config_file = os.path.join(temp_dir, "config.yaml")
+        with open(config_file, 'w') as f:
+            f.write(config_content)
         
-        bulk_sync = BulkParamSync(simple_config_file)
+        # Run bulk sync with environment pattern
+        bulk_sync = BulkParamSync(config_file)
+        summary = bulk_sync.sync_bulk(
+            os.path.join(temp_dir, "config/di-development/*.yaml"),
+            os.path.join(temp_dir, "config/di-production/*.yaml"),
+            dry_run=False,
+            interactive=False,
+            yes_to_all=True
+        )
         
-        with patch('builtins.print') as mock_print:
-            summary = bulk_sync.sync_bulk(
-                os.path.join(source_dir, '*.yaml'),
-                os.path.join(target_dir, '*.yaml'),
-                dry_run=True,
-                filter_spec='template.type:vpc'
-            )
-        
+        # Should find 2 pairs (vpc and app, not db)
         assert summary['total_files'] == 2
-        assert summary['filtered_files'] == 1
+        assert summary['changed_files'] == 2
         
-        # Check that vpc file was processed
-        print_calls = [str(call) for call in mock_print.call_args_list]
-        assert any('vpc.yaml' in str(call) and 'matches filter' in str(call) for call in print_calls)
-
-    def test_sync_bulk_no_sync_params_defined(self, temp_dir, config_file):
-        """Test bulk sync when no sync parameters are defined for a file."""
-        # Create test file with no matching pattern
-        source_dir = os.path.join(temp_dir, 'source')
-        target_dir = os.path.join(temp_dir, 'target')
-        os.makedirs(source_dir, exist_ok=True)
-        os.makedirs(target_dir, exist_ok=True)
-        
-        source_file = os.path.join(source_dir, 'unknown.yaml')
-        target_file = os.path.join(target_dir, 'unknown.yaml')
-        
-        with open(source_file, 'w') as f:
-            f.write("parameters:\n  Unknown: 'value'\n")
-        with open(target_file, 'w') as f:
-            f.write("parameters:\n  Unknown: 'other'\n")
-        
-        bulk_sync = BulkParamSync(config_file)
-        
-        with patch('builtins.print') as mock_print:
-            summary = bulk_sync.sync_bulk(
-                os.path.join(source_dir, '*.yaml'),
-                os.path.join(target_dir, '*.yaml')
-            )
-        
-        assert summary['total_files'] == 1
-        assert summary['changed_files'] == 0
-        
-        # Verify skip message
-        print_calls = [str(call) for call in mock_print.call_args_list]
-        assert any('No sync parameters defined' in str(call) for call in print_calls)
-
-
-class TestBulkSyncMain:
-    """Test the main function for bulk sync CLI."""
-
-    def test_main_with_all_arguments(self, mock_bulk_sync_summary):
-        """Test main function with all arguments."""
-        with patch('sceptre_sync.bulk_sync.BulkParamSync') as mock_bulk_class:
-            mock_bulk = Mock()
-            mock_bulk_class.return_value = mock_bulk
-            mock_bulk.sync_bulk.return_value = {
-                **mock_bulk_sync_summary,
-                'filtered_files': 1
-            }
-            
-            with patch('sys.argv', [
-                'bulk_sync.py',
-                '--source-pattern', '*/alpha/*.yaml',
-                '--target-pattern', '*/dev/*.yaml',
-                '--config', 'config.yaml',
-                '--dry-run',
-                '--non-interactive',
-                '--sync-template',
-                '--yes',
-                '--filter', 'type:vpc'
-            ]):
-                exit_code = main()
-            
-            assert exit_code == 0
-            mock_bulk_class.assert_called_once_with('config.yaml')
-            mock_bulk.sync_bulk.assert_called_once_with(
-                '*/alpha/*.yaml',
-                '*/dev/*.yaml',
-                True,   # dry-run
-                False,  # interactive (--non-interactive)
-                True,   # sync-template
-                True,   # yes
-                'type:vpc'  # filter
-            )
-
-    def test_main_with_minimum_arguments(self):
-        """Test main function with minimum required arguments."""
-        with patch('sceptre_sync.bulk_sync.BulkParamSync') as mock_bulk_class:
-            mock_bulk = Mock()
-            mock_bulk_class.return_value = mock_bulk
-            mock_bulk.sync_bulk.return_value = {
-                'total_files': 1,
-                'changed_files': 0,
-                'total_changes': 0,
-                'file_changes': {}
-            }
-            
-            with patch('sys.argv', [
-                'bulk_sync.py',
-                '-s', 'source.yaml',
-                '-t', 'target.yaml',
-                '-c', 'config.yaml'
-            ]):
-                exit_code = main()
-            
-            assert exit_code == 0
-            mock_bulk.sync_bulk.assert_called_once_with(
-                'source.yaml',
-                'target.yaml',
-                False,  # not dry-run
-                True,   # interactive (default)
-                False,  # not sync-template
-                False,  # not yes
-                None    # no filter
-            )
-
-    def test_main_missing_required_args(self):
-        """Test main function with missing required arguments."""
-        with patch('sys.argv', ['bulk_sync.py', '--source-pattern', 'source/*.yaml']):
-            with pytest.raises(SystemExit) as exc_info:
-                main()
-            
-            assert exc_info.value.code == 2
-
-    def test_main_help(self, capsys):
-        """Test main function help display."""
-        with patch('sys.argv', ['bulk_sync.py', '--help']):
-            with pytest.raises(SystemExit) as exc_info:
-                main()
-            
-            assert exc_info.value.code == 0
-            captured = capsys.readouterr()
-            assert "Bulk synchronize parameters" in captured.out
-            assert "--source-pattern" in captured.out
-            assert "--target-pattern" in captured.out
+        yaml = ruamel.yaml.YAML()
+        for stack in ['vpc', 'app']:
+            with open(os.path.join(prod_dir, f"{stack}.yaml"), 'r') as f:
+                result = yaml.load(f)
+            assert result['parameters']['InstanceType'] == "t3.large"
+            assert result['parameters']['Environment'] == "production"  # Static override
+            assert result['parameters']['StackName'] == stack  # Preserved

@@ -160,27 +160,43 @@ class BulkParamSync:
         for source_file, target_file in file_pairs:
             print(f"\nProcessing: {source_file} -> {target_file}")
 
-            # Determine parameters to sync based on source file
-            params_to_sync = self.param_sync.get_sync_params(source_file)
+            # Check if we have sync rules (new multi-key approach)
+            sync_rules = self.param_sync.get_sync_rules(source_file)
+            
+            if sync_rules:
+                # New multi-key sync with static values support!
+                print(f"Using multi-key sync rules for {source_file}")
+                
+                # Generate diff using the multi-key sync
+                diff = self.param_sync.sync_parameters(
+                    source_file, target_file,
+                    dry_run=True, 
+                    sync_template=sync_template,
+                    filter_spec=filter_spec
+                )
+            else:
+                # Fallback to old single-key approach for backward compatibility
+                # Determine parameters to sync based on source file
+                params_to_sync = self.param_sync.get_sync_params(source_file)
 
-            if not params_to_sync:
-                print(f"No sync parameters defined for {source_file}, skipping.")
-                continue
+                if not params_to_sync:
+                    print(f"No sync parameters defined for {source_file}, skipping.")
+                    continue
 
-            # Determine parameters to delete based on source file
-            params_to_delete = self.param_sync.get_delete_params(source_file)
+                # Determine parameters to delete based on source file
+                params_to_delete = self.param_sync.get_delete_params(source_file)
 
-            # Determine if template should be synced
-            should_sync_template = (
-                sync_template or self.param_sync.should_sync_template(source_file)
-            )
+                # Determine if template should be synced
+                should_sync_template = (
+                    sync_template or self.param_sync.should_sync_template(source_file)
+                )
 
-            # Generate diff
-            diff = self.param_sync.sync_parameters(
-                source_file, target_file, params_to_sync, params_to_delete,
-                dry_run=True, sync_template=should_sync_template,
-                filter_spec=filter_spec
-            )
+                # Generate diff using old single-key approach
+                diff = self.param_sync.sync_parameters(
+                    source_file, target_file, params_to_sync, params_to_delete,
+                    dry_run=True, sync_template=should_sync_template,
+                    filter_spec=filter_spec
+                )
 
             # Check if file was filtered out
             if not diff and filter_spec:
@@ -206,11 +222,21 @@ class BulkParamSync:
 
             # Apply changes if confirmed or yes_to_all
             if proceed and not dry_run:
-                self.param_sync.sync_parameters(
-                    source_file, target_file, params_to_sync, params_to_delete,
-                    dry_run=False, sync_template=should_sync_template,
-                    filter_spec=filter_spec
-                )
+                if sync_rules:
+                    # Apply with multi-key sync
+                    self.param_sync.sync_parameters(
+                        source_file, target_file,
+                        dry_run=False,
+                        sync_template=sync_template,
+                        filter_spec=filter_spec
+                    )
+                else:
+                    # Apply with old single-key approach
+                    self.param_sync.sync_parameters(
+                        source_file, target_file, params_to_sync, params_to_delete,
+                        dry_run=False, sync_template=should_sync_template,
+                        filter_spec=filter_spec
+                    )
                 print("Changes applied.")
                 summary['changed_files'] += 1
                 summary['total_changes'] += total_changes
