@@ -4,7 +4,8 @@ A powerful utility for synchronizing configuration values between YAML files, or
 
 ## Features
 
-- **Generic Key Synchronization**: Sync any top-level or nested key in YAML files (not just `parameters`)
+- **Multi-Key Synchronization**: Sync multiple configuration sections in a single operation
+- **Generic Key Support**: Sync any top-level or nested key in YAML files (not just `parameters`)
 - **Backward Compatible**: Defaults to `parameters` for existing configurations
 - **Nested Key Support**: Use dot notation to sync nested structures (e.g., `stack_tags.environment`)
 - **Pattern-Based Configuration**: Define different sync rules for different file patterns
@@ -190,6 +191,27 @@ stack_tags:
   CostCenter: engineering      # Added
 parameters:
   InstanceType: t2.micro       # Unchanged
+```
+
+### Multi-Key Sync Output
+
+When using `sync_rules` to sync multiple keys, the output clearly shows changes for each key:
+
+```
+Changes to apply:
+
+  [parameters]
+    ~ VpcCidr: 10.1.0.0/16 -> 10.0.0.0/16
+    ~ InstanceType: t2.micro -> t3.large
+    
+  [stack_tags]
+    + CostCenter: engineering
+    ~ Environment: development -> production
+    ~ Owner: dev-team -> platform-team
+    
+  [sceptre_user_data]
+    ~ database_name: dev_db -> prod_db
+    ~ retention_days: 7 -> 30
 ```
 
 ### Example 3: Sync Nested Configuration
