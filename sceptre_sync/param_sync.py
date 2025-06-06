@@ -139,6 +139,39 @@ class ParamSync:
 
         return 'parameters'
 
+    def get_sync_rules(self, file_path: str) -> List[Dict]:
+        """
+        Get sync rules for a file based on configuration patterns.
+        
+        Converts legacy format to new sync_rules format for compatibility.
+        
+        Args:
+            file_path: Path to the file to match against patterns
+            
+        Returns:
+            List of sync rule dictionaries with 'key' and 'sync_params'
+        """
+        if not self.config or 'template_patterns' not in self.config:
+            return []
+        
+        for pattern_config in self.config['template_patterns']:
+            pattern = pattern_config.get('pattern')
+            if pattern and fnmatch.fnmatch(file_path, pattern):
+                # Check for new sync_rules format
+                if 'sync_rules' in pattern_config:
+                    return pattern_config['sync_rules']
+                
+                # Convert legacy format to sync_rules
+                if 'sync_params' in pattern_config:
+                    sync_key = pattern_config.get('sync_key', 'parameters')
+                    return [{
+                        'key': sync_key,
+                        'sync_params': pattern_config['sync_params'],
+                        'delete_params': pattern_config.get('delete_params', [])
+                    }]
+        
+        return []
+
     def matches_filter(self, data: Dict, filter_spec: str) -> bool:
         """
         Check if the data matches the specified filter.
@@ -377,6 +410,50 @@ class ParamSync:
             'template': template_diff
         }
 
+    def generate_diff_multi(self, source_data: Dict, target_data: Dict,
+                           sync_rules: List[Dict], sync_template: bool = False) -> Dict:
+        """
+        Generate diff for multiple keys based on sync rules.
+        
+        Args:
+            source_data: Source YAML data
+            target_data: Target YAML data
+            sync_rules: List of sync rule dictionaries
+            sync_template: Whether to sync the template section
+            
+        Returns:
+            Dict with diffs organized by key
+        """
+        multi_diff = {}
+        
+        # Process each sync rule
+        for rule in sync_rules:
+            key = rule['key']
+            sync_params = rule.get('sync_params', [])
+            delete_params = rule.get('delete_params', [])
+            
+            # Generate diff for this key
+            diff = self.generate_diff(
+                source_data, target_data,
+                sync_params, delete_params,
+                False,  # template handled separately
+                sync_key=key
+            )
+            
+            # Store the diff under the key name
+            multi_diff[key] = diff
+        
+        # Handle template if requested
+        if sync_template:
+            multi_diff['template'] = self._compare_templates(
+                source_data.get('template', {}),
+                target_data.get('template', {})
+            ) if 'template' in source_data and 'template' in target_data else None
+        else:
+            multi_diff['template'] = None
+            
+        return multi_diff
+
     def sync_parameters(self, source_file: str, target_file: str,
                         params_to_sync: Optional[List[str]] = None,
                         params_to_delete: Optional[List[str]] = None,
@@ -412,71 +489,131 @@ class ParamSync:
             else:
                 print(f"Source file {source_file} matches filter {filter_spec}, processing.")
 
-        # Determine parameters to sync if not provided
-        if params_to_sync is None:
-            params_to_sync = self.get_sync_params(source_file)
-            if not params_to_sync:
-                print(f"No sync parameters defined for {source_file}", file=sys.stderr)
-                return {
-                    'added': {}, 'modified': {}, 'unchanged': {},
-                    'deleted': {}, 'template': None
-                }
+        # Check if we have sync rules (multi-key) or need to use single-key logic
+        sync_rules = self.get_sync_rules(source_file)
+        
+        if sync_rules:
+            # Multi-key sync using sync_rules
+            # Determine if template should be synced
+            if sync_template is None:
+                sync_template = self.should_sync_template(source_file)
+            
+            # Generate multi-key diff
+            diff = self.generate_diff_multi(
+                source_data, target_data, sync_rules, sync_template
+            )
+        else:
+            # Legacy single-key sync
+            # Determine parameters to sync if not provided
+            if params_to_sync is None:
+                params_to_sync = self.get_sync_params(source_file)
+                if not params_to_sync:
+                    print(f"No sync parameters defined for {source_file}", file=sys.stderr)
+                    return {
+                        'added': {}, 'modified': {}, 'unchanged': {},
+                        'deleted': {}, 'template': None
+                    }
 
-        # Determine parameters to delete if not provided
-        if params_to_delete is None:
-            params_to_delete = self.get_delete_params(source_file)
+            # Determine parameters to delete if not provided
+            if params_to_delete is None:
+                params_to_delete = self.get_delete_params(source_file)
 
-        # Determine if template should be synced if not provided
-        if sync_template is None:
-            sync_template = self.should_sync_template(source_file)
+            # Determine if template should be synced if not provided
+            if sync_template is None:
+                sync_template = self.should_sync_template(source_file)
 
-        # Generate diff
-        diff = self.generate_diff(
-            source_data, target_data, params_to_sync,
-            params_to_delete, sync_template, sync_key
-        )
+            # Generate single-key diff
+            diff = self.generate_diff(
+                source_data, target_data, params_to_sync,
+                params_to_delete, sync_template, sync_key
+            )
 
         # Apply changes if not dry run
         if not dry_run:
-            # Get source values
-            if '.' in sync_key:
-                source_values = self._get_nested_value(source_data, sync_key) or {}
+            if sync_rules:
+                # Multi-key apply
+                for key_name, key_diff in diff.items():
+                    if key_name == 'template':
+                        # Handle template separately
+                        if key_diff:
+                            target_data['template'] = source_data['template']
+                        continue
+                    
+                    # Get source values for this key
+                    if '.' in key_name:
+                        source_values = self._get_nested_value(source_data, key_name) or {}
+                    else:
+                        source_values = source_data.get(key_name, {})
+                    
+                    # Apply additions and modifications
+                    added_and_modified = list(key_diff['added'].keys()) + list(key_diff['modified'].keys())
+                    for param in added_and_modified:
+                        if '.' in key_name:
+                            # Get or create the nested structure
+                            parts = key_name.split('.')
+                            current = target_data
+                            for part in parts[:-1]:
+                                if part not in current:
+                                    current[part] = {}
+                                current = current[part]
+                            if parts[-1] not in current:
+                                current[parts[-1]] = {}
+                            current[parts[-1]][param] = source_values[param]
+                        else:
+                            if key_name not in target_data:
+                                target_data[key_name] = {}
+                            target_data[key_name][param] = source_values[param]
+                    
+                    # Apply deletions
+                    for param in key_diff['deleted'].keys():
+                        if '.' in key_name:
+                            target_values = self._get_nested_value(target_data, key_name)
+                            if target_values and param in target_values:
+                                del target_values[param]
+                        else:
+                            if key_name in target_data and param in target_data[key_name]:
+                                del target_data[key_name][param]
             else:
-                source_values = source_data.get(sync_key, {})
-
-            # Apply parameter additions and modifications
-            added_and_modified = list(diff['added'].keys()) + list(diff['modified'].keys())
-            for param in added_and_modified:
-                # Create the sync_key structure if it doesn't exist
+                # Single-key apply (legacy)
+                # Get source values
                 if '.' in sync_key:
-                    # Get or create the nested structure
-                    parts = sync_key.split('.')
-                    current = target_data
-                    for part in parts[:-1]:
-                        if part not in current:
-                            current[part] = {}
-                        current = current[part]
-                    if parts[-1] not in current:
-                        current[parts[-1]] = {}
-                    current[parts[-1]][param] = source_values[param]
+                    source_values = self._get_nested_value(source_data, sync_key) or {}
                 else:
-                    if sync_key not in target_data:
-                        target_data[sync_key] = {}
-                    target_data[sync_key][param] = source_values[param]
+                    source_values = source_data.get(sync_key, {})
 
-            # Apply parameter deletions
-            for param in diff['deleted'].keys():
-                if '.' in sync_key:
-                    target_values = self._get_nested_value(target_data, sync_key)
-                    if target_values and param in target_values:
-                        del target_values[param]
-                else:
-                    if sync_key in target_data and param in target_data[sync_key]:
-                        del target_data[sync_key][param]
+                # Apply parameter additions and modifications
+                added_and_modified = list(diff['added'].keys()) + list(diff['modified'].keys())
+                for param in added_and_modified:
+                    # Create the sync_key structure if it doesn't exist
+                    if '.' in sync_key:
+                        # Get or create the nested structure
+                        parts = sync_key.split('.')
+                        current = target_data
+                        for part in parts[:-1]:
+                            if part not in current:
+                                current[part] = {}
+                            current = current[part]
+                        if parts[-1] not in current:
+                            current[parts[-1]] = {}
+                        current[parts[-1]][param] = source_values[param]
+                    else:
+                        if sync_key not in target_data:
+                            target_data[sync_key] = {}
+                        target_data[sync_key][param] = source_values[param]
 
-            # Apply template change if needed
-            if diff['template']:
-                target_data['template'] = source_data['template']
+                # Apply parameter deletions
+                for param in diff['deleted'].keys():
+                    if '.' in sync_key:
+                        target_values = self._get_nested_value(target_data, sync_key)
+                        if target_values and param in target_values:
+                            del target_values[param]
+                    else:
+                        if sync_key in target_data and param in target_data[sync_key]:
+                            del target_data[sync_key][param]
+
+                # Apply template change if needed
+                if diff['template']:
+                    target_data['template'] = source_data['template']
 
             # Save the updated target file
             self.save_yaml_file(target_file, target_data)
@@ -492,6 +629,13 @@ class ParamSync:
         """
         if not diff:
             # Empty diff means file was filtered out
+            return
+
+        # Check if this is a multi-key diff
+        is_multi_key = any(isinstance(v, dict) and 'added' in v for k, v in diff.items() if k != 'template')
+        
+        if is_multi_key:
+            self.print_diff_multi(diff)
             return
 
         changes_exist = (
@@ -525,6 +669,64 @@ class ParamSync:
 
         if diff['unchanged']:
             print(f"\n  {len(diff['unchanged'])} parameters already in sync.")
+    
+    def print_diff_multi(self, diff: Dict) -> None:
+        """
+        Print a human-readable diff for multi-key changes.
+        
+        Args:
+            diff: Dict containing diffs organized by key
+        """
+        # Check if any changes exist
+        has_changes = False
+        for key, key_diff in diff.items():
+            if key == 'template':
+                if key_diff:
+                    has_changes = True
+            elif isinstance(key_diff, dict) and (
+                key_diff.get('added') or key_diff.get('modified') or key_diff.get('deleted')
+            ):
+                has_changes = True
+                break
+        
+        if not has_changes:
+            print("No changes to apply.")
+            return
+            
+        print("\nChanges to apply:")
+        
+        # Process each key
+        for key, key_diff in sorted(diff.items()):
+            if key == 'template':
+                if key_diff:
+                    print("\n  Template to modify:")
+                    print(f"    ~ {key_diff['old']} -> {key_diff['new']}")
+                continue
+            
+            if not isinstance(key_diff, dict):
+                continue
+                
+            changes_in_key = (
+                key_diff.get('added') or key_diff.get('modified') or key_diff.get('deleted')
+            )
+            
+            if changes_in_key:
+                print(f"\n  [{key}]")
+                
+                if key_diff.get('added'):
+                    for param, value in key_diff['added'].items():
+                        print(f"    + {param}: {value}")
+                
+                if key_diff.get('modified'):
+                    for param, values in key_diff['modified'].items():
+                        print(f"    ~ {param}: {values['old']} -> {values['new']}")
+                
+                if key_diff.get('deleted'):
+                    for param, value in key_diff['deleted'].items():
+                        print(f"    - {param}: {value}")
+                
+                if key_diff.get('unchanged'):
+                    print(f"    ({len(key_diff['unchanged'])} unchanged)")
 
 
 def main():

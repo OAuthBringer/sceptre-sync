@@ -1,21 +1,28 @@
-# Parameter Sync Utility
+# Sceptre Sync Utility
 
-A utility for synchronizing configuration parameters between YAML files, particularly designed for Sceptre configuration files.
+A powerful utility for synchronizing configuration values between YAML files, originally designed for Sceptre but now supports any YAML configuration structure.
 
 ## Features
 
-- Synchronize specific parameters between YAML files
-- Preserve formatting and comments in YAML files
-- Pattern-based configuration to define which parameters to sync
-- Support for both single file operations and bulk operations
-- Interactive mode for confirming changes
-- Dry run mode to preview changes without applying them
+- **Generic Key Synchronization**: Sync any top-level or nested key in YAML files (not just `parameters`)
+- **Backward Compatible**: Defaults to `parameters` for existing configurations
+- **Nested Key Support**: Use dot notation to sync nested structures (e.g., `stack_tags.environment`)
+- **Pattern-Based Configuration**: Define different sync rules for different file patterns
+- **Format Preservation**: Maintains YAML formatting, comments, and structure
+- **Bulk Operations**: Sync across multiple files with pattern matching
+- **Interactive Mode**: Confirm changes before applying
+- **Dry Run Mode**: Preview changes without modifying files
+- **Filter Support**: Process only files matching specific criteria
 
 ## Installation
 
 ```bash
 # Clone the repository
 git clone <repository-url>
+
+# Create virtual environment
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
 # Install dependencies
 pip install -r requirements.txt
@@ -26,76 +33,223 @@ pip install -e .
 
 ## Usage
 
-### Single File Sync
+### Basic Parameter Sync (Original Behavior)
 
 Synchronize parameters between two files:
 
 ```bash
-python -m param_sync.cli sync source_file.yaml target_file.yaml --config config.yaml
+python -m sceptre_sync.param_sync source.yaml target.yaml --params VpcCidr SubnetCidr
 ```
 
-Options:
-- `--config`, `-c`: Configuration file defining sync rules
-- `--params`, `-p`: Specific parameters to sync (overrides config)
-- `--dry-run`, `-d`: Show changes without applying them
+### Generic Key Sync (New Feature)
 
-### Bulk Sync
-
-Synchronize parameters across multiple files:
+Synchronize any key in your YAML files:
 
 ```bash
-python -m param_sync.cli bulk --source-pattern "*/di-alpha/**/*.yaml" --target-pattern "*/di-dev/**/*.yaml" --config config.yaml
+# Sync stack_tags instead of parameters
+python -m sceptre_sync.param_sync source.yaml target.yaml --sync-key stack_tags --params Environment Owner
+
+# Sync sceptre_user_data
+python -m sceptre_sync.param_sync source.yaml target.yaml --sync-key sceptre_user_data --params database_name retention_days
+
+# Sync nested keys using dot notation
+python -m sceptre_sync.param_sync source.yaml target.yaml --sync-key stack_tags.nested --params Environment Region
 ```
 
-Options:
-- `--source-pattern`, `-s`: Pattern for source files
-- `--target-pattern`, `-t`: Pattern for target files
+### Command Line Options
+
 - `--config`, `-c`: Configuration file defining sync rules
+- `--params`, `-p`: Specific parameters/values to sync
+- `--delete`, `-D`: Parameters to delete from target
 - `--dry-run`, `-d`: Show changes without applying them
-- `--non-interactive`, `-n`: Apply all changes without prompting
+- `--sync-template`, `-T`: Also sync the template section
+- `--filter`, `-f`: Filter files by field value (e.g., `template.path:enhanced`)
+- `--sync-key`, `-k`: Key to synchronize (default: `parameters`)
 
-## Configuration
+### Bulk Operations
 
-Create a YAML configuration file to define which parameters to sync for different file patterns:
+Synchronize across multiple files:
+
+```bash
+# Sync parameters (default behavior)
+python -m sceptre_sync.bulk_sync \
+  --source-pattern "config/prod/**/*.yaml" \
+  --target-pattern "config/dev/**/*.yaml" \
+  --config sync-config.yaml
+
+# Sync stack_tags across environments
+python -m sceptre_sync.bulk_sync \
+  --source-pattern "config/prod/**/*.yaml" \
+  --target-pattern "config/dev/**/*.yaml" \
+  --config sync-config.yaml \
+  --sync-key stack_tags
+```
+
+## Configuration File
+
+Create a YAML configuration file to define sync rules:
+
+### Basic Configuration (Parameters Only)
 
 ```yaml
 template_patterns:
-  - pattern: "*/api/tasks/*.yaml"
+  - pattern: "**/vpc.yaml"
     sync_params:
-      - CPUReservation
-      - MemoryReservation
-      - ScaleOutCooldownPeriod
-      - CpuScalingTargetValue
+      - VpcCidr
+      - PublicSubnetCidr
+      - PrivateSubnetCidr
+    delete_params:
+      - DeprecatedParam
+    sync_template: true
+```
 
-  - pattern: "*/core/vpc.yaml"
+### Advanced Configuration (Multi-Key Sync)
+
+```yaml
+template_patterns:
+  # Sync multiple keys in a single operation (NEW!)
+  - pattern: "**/app/*.yaml"
+    sync_rules:
+      - key: parameters
+        sync_params:
+          - VpcCidr
+          - InstanceType
+      - key: stack_tags
+        sync_params:
+          - Environment
+          - Owner
+          - CostCenter
+      - key: sceptre_user_data
+        sync_params:
+          - database_name
+          - retention_days
+  
+  # Single-key configuration (backward compatible)
+  - pattern: "**/vpc.yaml"
+    sync_key: parameters  # Optional, defaults to 'parameters'
     sync_params:
-      - CidrBlock
-      - PublicSubnetCidrBlocks
-      - PrivateSubnetCidrBlocks
+      - VpcCidr
+      - SubnetCidr
+  
+  # Legacy format still works
+  - pattern: "**/legacy/*.yaml"
+    sync_params:  # No sync_key means 'parameters'
+      - Environment
+      - Region
 ```
 
 ## Examples
 
-### Sync specific parameters between two files
+### Example 1: Multi-Key Sync (NEW!)
+
+With the new multi-key support, you can synchronize multiple configuration sections in a single operation:
 
 ```bash
-python -m param_sync.cli sync config/di-alpha/api/tasks/service.yaml config/di-dev/api/tasks/service.yaml --params CPUReservation MemoryReservation
+# Using config file with sync_rules
+python -m sceptre_sync.param_sync prod/app.yaml dev/app.yaml --config multi-sync.yaml
 ```
 
-### Preview changes without applying them
+This will sync parameters, stack_tags, and sceptre_user_data all at once based on your configuration.
 
-```bash
-python -m param_sync.cli sync config/di-alpha/api/tasks/service.yaml config/di-dev/api/tasks/service.yaml --config config.yaml --dry-run
+### Example 2: Sync Stack Tags Only
+
+Source file (`prod/app.yaml`):
+```yaml
+template: app-template.yaml
+stack_tags:
+  Environment: production
+  Owner: platform-team
+  CostCenter: engineering
+parameters:
+  InstanceType: t3.large
 ```
 
-### Bulk sync from alpha to dev environment
+Target file (`dev/app.yaml`):
+```yaml
+template: app-template.yaml
+stack_tags:
+  Environment: development
+  Owner: dev-team
+parameters:
+  InstanceType: t2.micro
+```
+
+Command:
+```bash
+python -m sceptre_sync.param_sync prod/app.yaml dev/app.yaml \
+  --sync-key stack_tags \
+  --params Environment Owner CostCenter
+```
+
+Result in `dev/app.yaml`:
+```yaml
+template: app-template.yaml
+stack_tags:
+  Environment: production      # Changed from 'development'
+  Owner: platform-team         # Changed from 'dev-team'
+  CostCenter: engineering      # Added
+parameters:
+  InstanceType: t2.micro       # Unchanged
+```
+
+### Example 3: Sync Nested Configuration
 
 ```bash
-python -m param_sync.cli bulk --source-pattern "config/di-alpha/api/tasks/*.yaml" --target-pattern "config/di-dev/api/tasks/*.yaml" --config config.yaml
+# Sync nested configuration values
+python -m sceptre_sync.param_sync source.yaml target.yaml \
+  --sync-key config.database.settings \
+  --params connection_pool max_retries
+```
+
+### Example 4: Filter-Based Sync
+
+```bash
+# Only sync files that use enhanced templates
+python -m sceptre_sync.param_sync source.yaml target.yaml \
+  --filter "template.path:enhanced" \
+  --sync-key stack_tags \
+  --params Environment
+```
+
+### Example 5: Backward Compatible Usage
+
+```bash
+# Original behavior - syncs 'parameters' by default
+python -m sceptre_sync.param_sync source.yaml target.yaml \
+  --params VpcCidr InstanceType
+
+# Explicitly specify parameters (same result)
+python -m sceptre_sync.param_sync source.yaml target.yaml \
+  --sync-key parameters \
+  --params VpcCidr InstanceType
+```
+
+## Use Cases
+
+1. **Environment Promotion**: Sync production settings to development environments
+2. **Tag Management**: Ensure consistent tagging across stacks
+3. **Configuration Drift**: Detect and fix configuration differences
+4. **Sceptre User Data**: Sync custom Jinja2 variables between stacks
+5. **Multi-Region Deployments**: Maintain consistent configurations across regions
+
+## Testing
+
+Run the test suite:
+
+```bash
+# Run all tests
+pytest
+
+# Run with coverage
+pytest --cov=sceptre_sync --cov-report=term-missing
+
+# Run specific test file
+pytest tests/test_generic_sync.py -v
 ```
 
 ## Requirements
 
-- Python 3.6+
-- ruamel.yaml
-- jsonschema
+- Python 3.8+
+- ruamel.yaml (preserves YAML formatting)
+- jsonschema (configuration validation)
+- pytest (for testing)
