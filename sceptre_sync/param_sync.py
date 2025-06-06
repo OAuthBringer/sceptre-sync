@@ -443,17 +443,60 @@ class ParamSync:
             key = rule['key']
             sync_params = rule.get('sync_params', [])
             delete_params = rule.get('delete_params', [])
+            static_values = rule.get('static_values', {})
             
-            # Generate diff for this key
-            diff = self.generate_diff(
-                source_data, target_data,
-                sync_params, delete_params,
-                False,  # template handled separately
-                sync_key=key
-            )
+            # Get source and target data for this key
+            if '.' in key:
+                source_key_data = self._get_nested_value(source_data, key) or {}
+                target_key_data = self._get_nested_value(target_data, key) or {}
+            else:
+                source_key_data = source_data.get(key, {})
+                target_key_data = target_data.get(key, {})
+            
+            # Start with source values for sync_params
+            effective_source = {}
+            for param in sync_params:
+                if param in source_key_data:
+                    effective_source[param] = source_key_data[param]
+            
+            # Override/add static values
+            # Static values take precedence over source values
+            for param, value in static_values.items():
+                effective_source[param] = value
+            
+            # Now generate diff using effective source
+            added = {}
+            modified = {}
+            unchanged = {}
+            deleted = {}
+            
+            # Check all params that should be synced (from source + static)
+            all_params = set(sync_params) | set(static_values.keys())
+            for param in all_params:
+                if param in effective_source:
+                    source_value = effective_source[param]
+                    if param not in target_key_data:
+                        added[param] = source_value
+                    elif str(source_value) != str(target_key_data[param]):
+                        modified[param] = {
+                            'old': target_key_data[param],
+                            'new': source_value
+                        }
+                    else:
+                        unchanged[param] = source_value
+            
+            # Check parameters to delete
+            for param in delete_params:
+                if param in target_key_data:
+                    deleted[param] = target_key_data[param]
             
             # Store the diff under the key name
-            multi_diff[key] = diff
+            multi_diff[key] = {
+                'added': added,
+                'modified': modified,
+                'unchanged': unchanged,
+                'deleted': deleted
+            }
         
         # Handle template if requested
         if sync_template:
@@ -571,22 +614,57 @@ class ParamSync:
                     
                     # Apply additions and modifications
                     added_and_modified = list(key_diff['added'].keys()) + list(key_diff['modified'].keys())
-                    for param in added_and_modified:
-                        if '.' in key_name:
-                            # Get or create the nested structure
-                            parts = key_name.split('.')
-                            current = target_data
-                            for part in parts[:-1]:
-                                if part not in current:
-                                    current[part] = {}
-                                current = current[part]
-                            if parts[-1] not in current:
-                                current[parts[-1]] = {}
-                            current[parts[-1]][param] = source_values[param]
-                        else:
-                            if key_name not in target_data:
-                                target_data[key_name] = {}
-                            target_data[key_name][param] = source_values[param]
+                    
+                    # Need to rebuild effective source for apply
+                    # Find the sync rule for this key to get static values
+                    rule = next((r for r in sync_rules if r['key'] == key_name), None)
+                    if rule:
+                        static_values = rule.get('static_values', {})
+                        # Build effective source with static values
+                        effective_source = {}
+                        for param in added_and_modified:
+                            if param in static_values:
+                                effective_source[param] = static_values[param]
+                            elif param in source_values:
+                                effective_source[param] = source_values[param]
+                        
+                        # Apply from effective source
+                        for param in added_and_modified:
+                            if param in effective_source:
+                                param_value = effective_source[param]
+                                if '.' in key_name:
+                                    # Get or create the nested structure
+                                    parts = key_name.split('.')
+                                    current = target_data
+                                    for part in parts[:-1]:
+                                        if part not in current:
+                                            current[part] = {}
+                                        current = current[part]
+                                    if parts[-1] not in current:
+                                        current[parts[-1]] = {}
+                                    current[parts[-1]][param] = param_value
+                                else:
+                                    if key_name not in target_data:
+                                        target_data[key_name] = {}
+                                    target_data[key_name][param] = param_value
+                    else:
+                        # Fallback to old behavior if no rule found
+                        for param in added_and_modified:
+                            if '.' in key_name:
+                                # Get or create the nested structure
+                                parts = key_name.split('.')
+                                current = target_data
+                                for part in parts[:-1]:
+                                    if part not in current:
+                                        current[part] = {}
+                                    current = current[part]
+                                if parts[-1] not in current:
+                                    current[parts[-1]] = {}
+                                current[parts[-1]][param] = source_values.get(param)
+                            else:
+                                if key_name not in target_data:
+                                    target_data[key_name] = {}
+                                target_data[key_name][param] = source_values.get(param)
                     
                     # Apply deletions
                     for param in key_diff['deleted'].keys():
