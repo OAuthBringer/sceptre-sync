@@ -12,6 +12,8 @@ A powerful YAML configuration synchronization tool that enables bulk updates acr
 - **Pattern-Based Rules**: Different sync rules for different file patterns
 - **Format Preservation**: Maintains YAML formatting, comments, and structure
 - **Optional Parameters**: Works with YAML files that don't have all keys
+- **Filtering**: Include or exclude files based on field values
+- **Environment Mapping**: Automatic mapping between environment directories
 - **Backward Compatible**: Existing configurations continue to work
 
 ## Installation
@@ -65,12 +67,12 @@ template_patterns:
       - key: stack_tags
         sync_params:
           - Application
+          - Owner
         static_values:
           CostCenter: engineering
-          Owner: platform-team
           Compliance: sox
   
-  # Simple configuration for VPC stacks
+  # Simple configuration for VPC stacks (backward compatible)
   - pattern: "**/vpc.yaml"
     sync_params:  # Legacy format - still works!
       - VpcCidr
@@ -156,7 +158,7 @@ template_patterns:
           Compliance: sox-pci
           DataClassification: internal
           BackupRequired: "true"
-          CostCenter: "{{ cost_center }}"  # Can use variables if needed
+          CostCenter: engineering
 ```
 
 ```bash
@@ -170,7 +172,7 @@ python -m sceptre_sync.bulk_sync \
 
 ### 4. Environment-Specific VPC Configuration
 
-Sync network configuration between environments with different CIDR blocks:
+Sync network configuration between environments:
 
 ```yaml
 # network-sync.yaml
@@ -211,12 +213,20 @@ done
 Only sync stacks that match specific criteria:
 
 ```bash
-# Only sync stacks using enhanced templates
+# Only sync stacks using enhanced templates (inclusion filter)
 python -m sceptre_sync.bulk_sync \
   --source-pattern "config/dev/**/*.yaml" \
   --target-pattern "config/prod/**/*.yaml" \
   --config sync-config.yaml \
   --filter "template.path:enhanced" \
+  --yes
+
+# Exclude test stacks (exclusion filter)
+python -m sceptre_sync.bulk_sync \
+  --source-pattern "config/dev/**/*.yaml" \
+  --target-pattern "config/prod/**/*.yaml" \
+  --config sync-config.yaml \
+  --filter "template.type:!test" \
   --yes
 ```
 
@@ -246,7 +256,7 @@ template_patterns:
         static_values:
           ssl_required: "true"
       
-      # Complex nested structures
+      # Pure static values (no sync_params)
       - key: config.monitoring
         static_values:
           enabled: true
@@ -316,7 +326,7 @@ Options:
   --yes, -y             Auto-approve all changes
   --non-interactive, -n  Run without prompts (same as --yes)
   --sync-template, -T    Also sync template sections
-  --filter, -f          Filter by field value (e.g., template.path:enhanced)
+  --filter, -f          Filter by field value (see Filtering section)
 ```
 
 ### Single File Sync
@@ -332,6 +342,28 @@ Options:
   --sync-template, -T    Also sync template section
   --filter, -f          Filter by field value
   --sync-key, -k        Key to sync (default: parameters)
+```
+
+## Filtering
+
+### Inclusion Filters
+Include only files where a field contains a specific value:
+```bash
+--filter "template.path:enhanced"     # Only files with 'enhanced' in template path
+--filter "environment:prod"           # Only files with 'prod' in environment
+```
+
+### Exclusion Filters
+Exclude files where a field contains a specific value:
+```bash
+--filter "template.type:!test"        # Exclude files with 'test' in template type
+--filter "stack_name:!deprecated"     # Exclude deprecated stacks
+```
+
+### Multiple Filters
+Use comma-separated filters (AND logic - all must match):
+```bash
+--filter "environment:prod,template.type:!test"  # Prod environment but not test templates
 ```
 
 ## Common Patterns
@@ -405,6 +437,7 @@ ls config/prod/**/*.yaml # Check target pattern
 - Check if sync rules match your file patterns
 - Verify key names are correct (use `sync_key` or `sync_rules`)
 - Ensure static_values syntax is correct
+- Use `--dry-run` to see what would be changed
 
 ### Pattern matching issues
 
@@ -426,8 +459,39 @@ pytest --cov=sceptre_sync --cov-report=term-missing
 pytest tests/test_bulk_sync.py -v
 ```
 
+## Bulk Sync Test Coverage
+
+The bulk_sync module currently has **67% test coverage**. The tested functionality includes:
+
+### ✅ Well-Tested Features:
+- Multi-key sync rules with multiple keys per pattern
+- Static values injection (both simple and complex types)
+- Backward compatibility with legacy single-key format
+- Filtering functionality (inclusion and exclusion)
+- Environment directory mapping (di-development → di-production)
+- File pairing logic for bulk operations
+
+### ❌ Untested Areas:
+- Direct mapping when not using environment patterns (lines 98-99)
+- Legacy single-key sync path in bulk operations (lines 180-195)
+- Interactive prompting for changes (lines 212-213)
+- Error handling for missing target files (lines 220-221)
+- Main entry point and CLI argument parsing (lines 250-296)
+
 ## Requirements
 
 - Python 3.8+
 - ruamel.yaml (preserves YAML formatting)
 - See requirements.txt for full list
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Add tests for new functionality
+4. Ensure all tests pass
+5. Submit a pull request
+
+## License
+
+[Add your license information here]
